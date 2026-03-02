@@ -24,9 +24,9 @@ const TARGET_SAMPLE_RATE: u32 = 22050;
 /// post-processor. Generic over the inference session type, so it works
 /// with any backend (ort, rten, tract).
 pub struct BeatThis<S: InferenceSession> {
-    mel: MelProcessor<S>,
-    inference: BeatInference<S>,
-    post: PostProcessor,
+    pub mel: MelProcessor<S>,
+    pub inference: BeatInference<S>,
+    pub post: PostProcessor,
 }
 
 impl<S: InferenceSession> BeatThis<S> {

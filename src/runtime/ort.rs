@@ -3,6 +3,8 @@ use std::path::Path;
 
 use anyhow::Result;
 use ndarray::ArrayD;
+use ort::execution_providers::coreml::CoreMLExecutionProvider;
+use ort::execution_providers::ExecutionProvider;
 use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
 use ort::value::{DynValue, Value};
@@ -10,6 +12,8 @@ use ort::value::{DynValue, Value};
 use super::{InferenceRuntime, InferenceSession, Tensor};
 
 /// Ort-based ONNX inference runtime.
+///
+/// Automatically tries CoreML on macOS (falls back to CPU if unavailable).
 pub struct OrtRuntime {
     pub optimization_level: GraphOptimizationLevel,
     pub intra_threads: usize,
@@ -21,6 +25,13 @@ impl Default for OrtRuntime {
             optimization_level: GraphOptimizationLevel::Level3,
             intra_threads: 1,
         }
+    }
+}
+
+impl OrtRuntime {
+    /// Check if CoreML is available in the loaded ORT runtime.
+    pub fn is_coreml_available(&self) -> bool {
+        CoreMLExecutionProvider::default().is_available().unwrap_or(false)
     }
 }
 
@@ -37,6 +48,9 @@ impl InferenceRuntime for OrtRuntime {
         let session = Session::builder()?
             .with_optimization_level(optimization_level)?
             .with_intra_threads(self.intra_threads)?
+            .with_execution_providers([
+                CoreMLExecutionProvider::default().build(),
+            ])?
             .commit_from_file(path)?;
         Ok(OrtSession { session })
     }

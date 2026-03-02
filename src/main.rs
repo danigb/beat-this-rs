@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::time::Instant;
 
 use anyhow::ensure;
 use clap::Parser;
@@ -42,6 +43,11 @@ struct Cli {
     /// Print estimated BPM to stdout
     #[arg(long = "bpm")]
     show_bpm: bool,
+
+    /// Print timing for each processing stage
+    #[arg(short = 'v', long = "verbose")]
+    verbose: bool,
+
 }
 
 #[derive(Clone, clap::ValueEnum)]
@@ -95,19 +101,73 @@ fn main() -> anyhow::Result<()> {
         beat_path.display()
     );
 
+    let total_start = Instant::now();
+
     // Initialize runtime and load models
     eprintln!("Loading models...");
+    let t = Instant::now();
     let runtime = beat_this::runtime::ort::OrtRuntime::default();
+    if cli.verbose {
+        let coreml = if runtime.is_coreml_available() { "yes" } else { "no" };
+        eprintln!("[info] CoreML available: {}", coreml);
+    }
     let mut bt = beat_this::BeatThis::new(&runtime, &mel_path, &beat_path)?;
+    if cli.verbose {
+        eprintln!("[timing] Model loading: {:.3}s", t.elapsed().as_secs_f64());
+    }
 
-    // Run pipeline
+    // Load audio
     eprintln!("Processing {}...", cli.audio_file.display());
-    let result = bt.process_file(&cli.audio_file)?;
+    let t = Instant::now();
+    let audio = beat_this::load_audio(&cli.audio_file, 22050)?;
+    if cli.verbose {
+        eprintln!(
+            "[timing] Audio loading: {:.3}s ({} samples, {:.1}s duration)",
+            t.elapsed().as_secs_f64(),
+            audio.samples.len(),
+            audio.samples.len() as f64 / audio.sample_rate as f64
+        );
+    }
+
+    // Mel spectrogram
+    let t = Instant::now();
+    let mel = bt.mel.process(&audio.samples)?;
+    if cli.verbose {
+        eprintln!(
+            "[timing] Mel spectrogram: {:.3}s ({} frames)",
+            t.elapsed().as_secs_f64(),
+            mel.shape[1]
+        );
+    }
+
+    // Beat inference
+    let t = Instant::now();
+    let (beat_logits, downbeat_logits) = bt.inference.process(&mel)?;
+    if cli.verbose {
+        eprintln!(
+            "[timing] Beat inference: {:.3}s",
+            t.elapsed().as_secs_f64()
+        );
+    }
+
+    // Post-processing
+    let t = Instant::now();
+    let result = bt.post.process(&beat_logits, &downbeat_logits)?;
+    if cli.verbose {
+        eprintln!(
+            "[timing] Post-processing: {:.3}s",
+            t.elapsed().as_secs_f64()
+        );
+    }
+
     eprintln!(
         "Found {} beats ({} downbeats)",
         result.beats.len(),
         result.downbeats.len()
     );
+    if cli.verbose {
+        eprintln!("[timing] Total: {:.3}s", total_start.elapsed().as_secs_f64());
+    }
 
     // If no output flag was given, print beats to stdout
     let has_output_flag = cli.output_beats.is_some()

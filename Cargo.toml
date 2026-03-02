@@ -12,7 +12,7 @@ name = "beat_this"
 path = "src/lib.rs"
 
 [dependencies]
-ort = { version = "=2.0.0-rc.10", features = ["ndarray"] }
+ort = { version = "=2.0.0-rc.10", features = ["ndarray", "load-dynamic", "coreml"] }
 ndarray = "0.16"
 anyhow = "1"
 symphonia = { version = "0.5", features = ["all"] }
