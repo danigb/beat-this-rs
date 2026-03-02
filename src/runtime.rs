@@ -1,5 +1,8 @@
 pub mod ort;
 
+#[cfg(feature = "rten")]
+pub mod rten;
+
 use anyhow::Result;
 use std::collections::HashMap;
 use std::path::Path;

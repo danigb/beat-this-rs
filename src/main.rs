@@ -7,6 +7,7 @@ use clap::Parser;
 use beat_this::output;
 use beat_this::postprocessing::BeatResult;
 use beat_this::runtime::InferenceRuntime;
+use beat_this::InferenceSession;
 
 const DEFAULT_MODEL_PATH: &str = "models/beat_this.onnx";
 const DEFAULT_MEL_MODEL_PATH: &str = "models/mel_spectrogram.onnx";
@@ -28,6 +29,10 @@ struct Cli {
     /// Model variant to use (standard or small)
     #[arg(long = "model-variant", value_enum, default_value_t = ModelVariant::Standard)]
     model_variant: ModelVariant,
+
+    /// Inference runtime to use
+    #[arg(long = "runtime", value_enum, default_value = "ort")]
+    runtime: Runtime,
 
     /// Write beat timestamps to a .beats file
     #[arg(short = 'o', long = "output-beats")]
@@ -56,13 +61,19 @@ struct Cli {
     /// Number of intra-op threads for ORT (0 = auto)
     #[arg(long = "threads", default_value_t = 0)]
     threads: usize,
-
 }
 
 #[derive(Clone, clap::ValueEnum)]
 enum ModelVariant {
     Standard,
     Small,
+}
+
+#[derive(Clone, clap::ValueEnum)]
+enum Runtime {
+    Ort,
+    #[cfg(feature = "rten")]
+    Rten,
 }
 
 /// Resolve beat model path: explicit --model wins, otherwise --model-variant selects the default.
@@ -85,69 +96,10 @@ fn print_beats_stdout(result: &BeatResult) {
     }
 }
 
-fn main() -> anyhow::Result<()> {
-    let cli = Cli::parse();
-
-    // Validate input file exists
-    ensure!(
-        cli.audio_file.exists(),
-        "Audio file not found: {}",
-        cli.audio_file.display()
-    );
-
-    // Resolve model paths and validate
-    let mel_path = cli.mel_model_path.clone();
-    let beat_path = resolve_beat_model_path(&cli);
-
-    ensure!(
-        mel_path.exists(),
-        "Mel model not found: {}\nDownload models or use --mel-model to specify the path.",
-        mel_path.display()
-    );
-    ensure!(
-        beat_path.exists(),
-        "Beat model not found: {}\nDownload models or use --model to specify the path.",
-        beat_path.display()
-    );
-
-    let total_start = Instant::now();
-
-    // Initialize runtime and load models
-    eprintln!("Loading models...");
-    let t = Instant::now();
-    let runtime = beat_this::runtime::ort::OrtRuntime {
-        intra_threads: cli.threads,
-        ..Default::default()
-    };
-    if cli.verbose {
-        let coreml = if runtime.is_coreml_available() { "yes" } else { "no" };
-        eprintln!("[info] CoreML available: {}", coreml);
-        eprintln!("[info] Intra-op threads: {}", cli.threads);
-    }
-    // Use a separate runtime for the beat model when profiling, so traces don't collide
-    let beat_runtime = if let Some(ref prefix) = cli.profile {
-        beat_this::runtime::ort::OrtRuntime {
-            intra_threads: cli.threads,
-            profiling_path: Some(std::path::PathBuf::from(prefix)),
-            ..Default::default()
-        }
-    } else {
-        beat_this::runtime::ort::OrtRuntime {
-            intra_threads: cli.threads,
-            ..Default::default()
-        }
-    };
-    let mel_session = runtime.load_model(&mel_path)?;
-    let beat_session = beat_runtime.load_model(&beat_path)?;
-    let mut bt = beat_this::BeatThis {
-        mel: beat_this::MelProcessor::new(mel_session),
-        inference: beat_this::BeatInference::new(beat_session),
-        post: beat_this::PostProcessor::default(),
-    };
-    if cli.verbose {
-        eprintln!("[timing] Model loading: {:.3}s", t.elapsed().as_secs_f64());
-    }
-
+/// Run the full pipeline (audio → mel → inference → postprocessing → output).
+///
+/// Generic over the inference session — works with any backend.
+fn run_pipeline<S: InferenceSession>(bt: &mut beat_this::BeatThis<S>, cli: &Cli) -> anyhow::Result<()> {
     // Load audio
     eprintln!("Processing {}...", cli.audio_file.display());
     let t = Instant::now();
@@ -192,21 +144,11 @@ fn main() -> anyhow::Result<()> {
         );
     }
 
-    // End profiling if enabled
-    if cli.profile.is_some() {
-        if let Ok(path) = bt.inference.session_mut().end_profiling() {
-            eprintln!("[profile] Beat model trace written to: {}", path);
-        }
-    }
-
     eprintln!(
         "Found {} beats ({} downbeats)",
         result.beats.len(),
         result.downbeats.len()
     );
-    if cli.verbose {
-        eprintln!("[timing] Total: {:.3}s", total_start.elapsed().as_secs_f64());
-    }
 
     // If no output flag was given, print beats to stdout
     let has_output_flag = cli.output_beats.is_some()
@@ -240,6 +182,107 @@ fn main() -> anyhow::Result<()> {
             Some(bpm) => println!("{:.1} BPM", bpm),
             None => eprintln!("Could not calculate BPM (too few beats)"),
         }
+    }
+
+    Ok(())
+}
+
+fn main() -> anyhow::Result<()> {
+    let cli = Cli::parse();
+
+    // Validate input file exists
+    ensure!(
+        cli.audio_file.exists(),
+        "Audio file not found: {}",
+        cli.audio_file.display()
+    );
+
+    // Resolve model paths and validate
+    let mel_path = cli.mel_model_path.clone();
+    let beat_path = resolve_beat_model_path(&cli);
+
+    ensure!(
+        mel_path.exists(),
+        "Mel model not found: {}\nDownload models or use --mel-model to specify the path.",
+        mel_path.display()
+    );
+    ensure!(
+        beat_path.exists(),
+        "Beat model not found: {}\nDownload models or use --model to specify the path.",
+        beat_path.display()
+    );
+
+    let total_start = Instant::now();
+
+    eprintln!("Loading models...");
+    let t = Instant::now();
+
+    match cli.runtime {
+        Runtime::Ort => {
+            let runtime = beat_this::runtime::ort::OrtRuntime {
+                intra_threads: cli.threads,
+                ..Default::default()
+            };
+            if cli.verbose {
+                let coreml = if runtime.is_coreml_available() { "yes" } else { "no" };
+                eprintln!("[info] Runtime: ort");
+                eprintln!("[info] CoreML available: {}", coreml);
+                eprintln!("[info] Intra-op threads: {}", cli.threads);
+            }
+            // Use a separate runtime for the beat model when profiling
+            let beat_runtime = if let Some(ref prefix) = cli.profile {
+                beat_this::runtime::ort::OrtRuntime {
+                    intra_threads: cli.threads,
+                    profiling_path: Some(std::path::PathBuf::from(prefix)),
+                    ..Default::default()
+                }
+            } else {
+                beat_this::runtime::ort::OrtRuntime {
+                    intra_threads: cli.threads,
+                    ..Default::default()
+                }
+            };
+            let mel_session = runtime.load_model(&mel_path)?;
+            let beat_session = beat_runtime.load_model(&beat_path)?;
+            let mut bt = beat_this::BeatThis {
+                mel: beat_this::MelProcessor::new(mel_session),
+                inference: beat_this::BeatInference::new(beat_session),
+                post: beat_this::PostProcessor::default(),
+            };
+            if cli.verbose {
+                eprintln!("[timing] Model loading: {:.3}s", t.elapsed().as_secs_f64());
+            }
+
+            run_pipeline(&mut bt, &cli)?;
+
+            // End ORT profiling
+            if cli.profile.is_some() {
+                if let Ok(path) = bt.inference.session_mut().end_profiling() {
+                    eprintln!("[profile] Beat model trace written to: {}", path);
+                }
+            }
+        }
+
+        #[cfg(feature = "rten")]
+        Runtime::Rten => {
+            if cli.verbose {
+                eprintln!("[info] Runtime: rten (pure Rust)");
+            }
+            if cli.profile.is_some() {
+                eprintln!("[warn] Profiling is only supported with the ort runtime, ignoring --profile");
+            }
+            let runtime = beat_this::runtime::rten::RtenRuntime;
+            let mut bt = beat_this::BeatThis::new(&runtime, &mel_path, &beat_path)?;
+            if cli.verbose {
+                eprintln!("[timing] Model loading: {:.3}s", t.elapsed().as_secs_f64());
+            }
+
+            run_pipeline(&mut bt, &cli)?;
+        }
+    }
+
+    if cli.verbose {
+        eprintln!("[timing] Total: {:.3}s", total_start.elapsed().as_secs_f64());
     }
 
     Ok(())

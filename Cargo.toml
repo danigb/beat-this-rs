@@ -11,9 +11,15 @@ path = "src/main.rs"
 name = "beat_this"
 path = "src/lib.rs"
 
+[features]
+default = []
+rten = ["dep:rten", "dep:rten-tensor"]
+
 [dependencies]
 ort = { version = "=2.0.0-rc.10", features = ["ndarray", "load-dynamic", "coreml"] }
 ndarray = "0.16"
+rten = { version = "0.24", optional = true, features = ["fft"] }
+rten-tensor = { version = "0.24", optional = true }
 anyhow = "1"
 symphonia = { version = "0.5", features = ["all"] }
 rubato = "0.14"
