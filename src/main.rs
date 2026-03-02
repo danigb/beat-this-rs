@@ -1,3 +1,147 @@
-fn main() {
-    println!("beat-this: Rust port of Beat This! beat tracker");
+use std::path::PathBuf;
+
+use anyhow::ensure;
+use clap::Parser;
+
+use beat_this::output;
+use beat_this::postprocessing::BeatResult;
+
+const DEFAULT_MODEL_PATH: &str = "models/beat_this.onnx";
+const DEFAULT_MEL_MODEL_PATH: &str = "models/mel_spectrogram.onnx";
+
+#[derive(Parser)]
+#[command(name = "beat-this", version, about = "Beat and downbeat tracking using Beat This! models")]
+struct Cli {
+    /// Path to the input audio file (WAV, MP3, FLAC, OGG)
+    audio_file: PathBuf,
+
+    /// Path to the beat model ONNX file
+    #[arg(long = "model", default_value = DEFAULT_MODEL_PATH)]
+    model_path: PathBuf,
+
+    /// Path to the mel spectrogram ONNX file
+    #[arg(long = "mel-model", default_value = DEFAULT_MEL_MODEL_PATH)]
+    mel_model_path: PathBuf,
+
+    /// Model variant to use (standard or small)
+    #[arg(long = "model-variant", value_enum, default_value_t = ModelVariant::Standard)]
+    model_variant: ModelVariant,
+
+    /// Write beat timestamps to a .beats file
+    #[arg(short = 'o', long = "output-beats")]
+    output_beats: Option<PathBuf>,
+
+    /// Write a click-track WAV file
+    #[arg(long = "output-click")]
+    output_click: Option<PathBuf>,
+
+    /// Write a mixed audio WAV file (original + clicks)
+    #[arg(long = "output-mixed")]
+    output_mixed: Option<PathBuf>,
+
+    /// Print estimated BPM to stdout
+    #[arg(long = "bpm")]
+    show_bpm: bool,
+}
+
+#[derive(Clone, clap::ValueEnum)]
+enum ModelVariant {
+    Standard,
+    Small,
+}
+
+/// Resolve beat model path: explicit --model wins, otherwise --model-variant selects the default.
+fn resolve_beat_model_path(cli: &Cli) -> PathBuf {
+    let model_was_explicit = cli.model_path != PathBuf::from(DEFAULT_MODEL_PATH);
+    if model_was_explicit {
+        cli.model_path.clone()
+    } else {
+        match cli.model_variant {
+            ModelVariant::Standard => PathBuf::from("models/beat_this.onnx"),
+            ModelVariant::Small => PathBuf::from("models/beat_this_small.onnx"),
+        }
+    }
+}
+
+fn print_beats_stdout(result: &BeatResult) {
+    let counts = output::beat_counts(result);
+    for (&time, &count) in result.beats.iter().zip(counts.iter()) {
+        println!("{:.3}\t{}", time, count);
+    }
+}
+
+fn main() -> anyhow::Result<()> {
+    let cli = Cli::parse();
+
+    // Validate input file exists
+    ensure!(
+        cli.audio_file.exists(),
+        "Audio file not found: {}",
+        cli.audio_file.display()
+    );
+
+    // Resolve model paths and validate
+    let mel_path = cli.mel_model_path.clone();
+    let beat_path = resolve_beat_model_path(&cli);
+
+    ensure!(
+        mel_path.exists(),
+        "Mel model not found: {}\nDownload models or use --mel-model to specify the path.",
+        mel_path.display()
+    );
+    ensure!(
+        beat_path.exists(),
+        "Beat model not found: {}\nDownload models or use --model to specify the path.",
+        beat_path.display()
+    );
+
+    // Initialize runtime and load models
+    eprintln!("Loading models...");
+    let runtime = beat_this::runtime::ort::OrtRuntime::default();
+    let mut bt = beat_this::BeatThis::new(&runtime, &mel_path, &beat_path)?;
+
+    // Run pipeline
+    eprintln!("Processing {}...", cli.audio_file.display());
+    let result = bt.process_file(&cli.audio_file)?;
+    eprintln!(
+        "Found {} beats ({} downbeats)",
+        result.beats.len(),
+        result.downbeats.len()
+    );
+
+    // If no output flag was given, print beats to stdout
+    let has_output_flag = cli.output_beats.is_some()
+        || cli.output_click.is_some()
+        || cli.output_mixed.is_some()
+        || cli.show_bpm;
+
+    if !has_output_flag {
+        print_beats_stdout(&result);
+    }
+
+    // Write requested outputs
+    if let Some(ref path) = cli.output_beats {
+        output::write_beats_file(path, &result)?;
+        eprintln!("Wrote beats to {}", path.display());
+    }
+
+    if let Some(ref path) = cli.output_click {
+        output::write_click_track(path, &result)?;
+        eprintln!("Wrote click track to {}", path.display());
+    }
+
+    if let Some(ref path) = cli.output_mixed {
+        let audio = beat_this::load_audio(&cli.audio_file, 44100)?;
+        output::write_mixed_audio(path, &result, &audio.samples, audio.sample_rate)?;
+        eprintln!("Wrote mixed audio to {}", path.display());
+    }
+
+    if cli.show_bpm {
+        match output::calculate_bpm(&result) {
+            Some(bpm) => println!("{:.1} BPM", bpm),
+            None => eprintln!("Could not calculate BPM (too few beats)"),
+        }
+    }
+
+    Ok(())
 }
