@@ -17,3 +17,7 @@ ndarray = "0.16"
 anyhow = "1"
 symphonia = { version = "0.5", features = ["all"] }
 rubato = "0.14"
+hound = "3.5"
+
+[dev-dependencies]
+tempfile = "3"

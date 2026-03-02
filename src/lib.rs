@@ -1,6 +1,7 @@
 pub mod audio;
 pub mod inference;
 pub mod mel;
+pub mod output;
 pub mod postprocessing;
 pub mod runtime;
 
