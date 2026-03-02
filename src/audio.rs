@@ -116,7 +116,7 @@ fn to_mono(samples: &[f32], channels: usize) -> Vec<f32> {
 
 /// Resample mono audio from `source_sr` to `target_sr` using sinc interpolation.
 /// Returns samples unchanged if rates already match.
-fn resample(samples: Vec<f32>, source_sr: u32, target_sr: u32) -> Result<Vec<f32>> {
+pub fn resample(samples: Vec<f32>, source_sr: u32, target_sr: u32) -> Result<Vec<f32>> {
     if source_sr == target_sr {
         return Ok(samples);
     }
