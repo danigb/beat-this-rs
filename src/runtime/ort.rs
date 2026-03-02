@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use ndarray::ArrayD;
@@ -17,13 +17,20 @@ use super::{InferenceRuntime, InferenceSession, Tensor};
 pub struct OrtRuntime {
     pub optimization_level: GraphOptimizationLevel,
     pub intra_threads: usize,
+    pub profiling_path: Option<PathBuf>,
 }
 
 impl Default for OrtRuntime {
     fn default() -> Self {
         Self {
             optimization_level: GraphOptimizationLevel::Level3,
-            intra_threads: 1,
+            // 0 = let ORT pick the thread count automatically.
+            // This is critical for performance: on Apple Silicon M1, intra_threads=1
+            // gives ~15.7s for beat inference on a 4.5-min track, while auto (0) gives
+            // ~3.4s — a 4.6x speedup. The bottleneck is batched MatMul in the attention
+            // layers (73% of inference time), which parallelizes well across cores.
+            intra_threads: 0,
+            profiling_path: None,
         }
     }
 }
@@ -45,13 +52,16 @@ impl InferenceRuntime for OrtRuntime {
             GraphOptimizationLevel::Level2 => GraphOptimizationLevel::Level2,
             GraphOptimizationLevel::Level3 => GraphOptimizationLevel::Level3,
         };
-        let session = Session::builder()?
+        let mut builder = Session::builder()?
             .with_optimization_level(optimization_level)?
             .with_intra_threads(self.intra_threads)?
             .with_execution_providers([
                 CoreMLExecutionProvider::default().build(),
-            ])?
-            .commit_from_file(path)?;
+            ])?;
+        if let Some(ref profile_path) = self.profiling_path {
+            builder = builder.with_profiling(profile_path)?;
+        }
+        let session = builder.commit_from_file(path)?;
         Ok(OrtSession { session })
     }
 }
@@ -59,6 +69,13 @@ impl InferenceRuntime for OrtRuntime {
 /// An ort inference session wrapping `ort::Session`.
 pub struct OrtSession {
     session: Session,
+}
+
+impl OrtSession {
+    /// End profiling and flush the trace JSON file. Returns the profile file path.
+    pub fn end_profiling(&mut self) -> Result<String> {
+        Ok(self.session.end_profiling()?)
+    }
 }
 
 impl InferenceSession for OrtSession {

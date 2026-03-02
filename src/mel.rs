@@ -16,6 +16,11 @@ impl<S: InferenceSession> MelProcessor<S> {
         Self { session }
     }
 
+    /// Get a mutable reference to the underlying session.
+    pub fn session_mut(&mut self) -> &mut S {
+        &mut self.session
+    }
+
     /// Compute mel spectrogram from mono PCM samples at 22050 Hz.
     ///
     /// Input: mono f32 samples (any length).

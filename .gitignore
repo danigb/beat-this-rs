@@ -7,3 +7,4 @@ integration_test_files/
 models/
 *.wav
 *.beats
+onnxruntime

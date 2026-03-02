@@ -6,6 +6,7 @@ use clap::Parser;
 
 use beat_this::output;
 use beat_this::postprocessing::BeatResult;
+use beat_this::runtime::InferenceRuntime;
 
 const DEFAULT_MODEL_PATH: &str = "models/beat_this.onnx";
 const DEFAULT_MEL_MODEL_PATH: &str = "models/mel_spectrogram.onnx";
@@ -47,6 +48,14 @@ struct Cli {
     /// Print timing for each processing stage
     #[arg(short = 'v', long = "verbose")]
     verbose: bool,
+
+    /// Enable ORT profiling and write trace JSON to this prefix
+    #[arg(long = "profile")]
+    profile: Option<String>,
+
+    /// Number of intra-op threads for ORT (0 = auto)
+    #[arg(long = "threads", default_value_t = 0)]
+    threads: usize,
 
 }
 
@@ -106,12 +115,35 @@ fn main() -> anyhow::Result<()> {
     // Initialize runtime and load models
     eprintln!("Loading models...");
     let t = Instant::now();
-    let runtime = beat_this::runtime::ort::OrtRuntime::default();
+    let runtime = beat_this::runtime::ort::OrtRuntime {
+        intra_threads: cli.threads,
+        ..Default::default()
+    };
     if cli.verbose {
         let coreml = if runtime.is_coreml_available() { "yes" } else { "no" };
         eprintln!("[info] CoreML available: {}", coreml);
+        eprintln!("[info] Intra-op threads: {}", cli.threads);
     }
-    let mut bt = beat_this::BeatThis::new(&runtime, &mel_path, &beat_path)?;
+    // Use a separate runtime for the beat model when profiling, so traces don't collide
+    let beat_runtime = if let Some(ref prefix) = cli.profile {
+        beat_this::runtime::ort::OrtRuntime {
+            intra_threads: cli.threads,
+            profiling_path: Some(std::path::PathBuf::from(prefix)),
+            ..Default::default()
+        }
+    } else {
+        beat_this::runtime::ort::OrtRuntime {
+            intra_threads: cli.threads,
+            ..Default::default()
+        }
+    };
+    let mel_session = runtime.load_model(&mel_path)?;
+    let beat_session = beat_runtime.load_model(&beat_path)?;
+    let mut bt = beat_this::BeatThis {
+        mel: beat_this::MelProcessor::new(mel_session),
+        inference: beat_this::BeatInference::new(beat_session),
+        post: beat_this::PostProcessor::default(),
+    };
     if cli.verbose {
         eprintln!("[timing] Model loading: {:.3}s", t.elapsed().as_secs_f64());
     }
@@ -158,6 +190,13 @@ fn main() -> anyhow::Result<()> {
             "[timing] Post-processing: {:.3}s",
             t.elapsed().as_secs_f64()
         );
+    }
+
+    // End profiling if enabled
+    if cli.profile.is_some() {
+        if let Ok(path) = bt.inference.session_mut().end_profiling() {
+            eprintln!("[profile] Beat model trace written to: {}", path);
+        }
     }
 
     eprintln!(

@@ -25,6 +25,11 @@ impl<S: InferenceSession> BeatInference<S> {
         Self { session }
     }
 
+    /// Get a mutable reference to the underlying session.
+    pub fn session_mut(&mut self) -> &mut S {
+        &mut self.session
+    }
+
     /// Run inference on a full mel spectrogram.
     ///
     /// Input: mel spectrogram `Tensor` with shape `[1, T, 128]`.
