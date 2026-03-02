@@ -2,3 +2,4 @@
 .vscode
 references/
 target/
+integration_test_files/
