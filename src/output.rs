@@ -4,6 +4,7 @@ use std::path::Path;
 
 use anyhow::{ensure, Result};
 use hound::{SampleFormat, WavSpec, WavWriter};
+use serde::Serialize;
 
 use crate::postprocessing::BeatResult;
 
@@ -157,6 +158,90 @@ pub fn calculate_bpm(result: &BeatResult) -> Option<f32> {
     };
 
     Some(60.0 / median)
+}
+
+/// A single beat entry for JSON output.
+#[derive(Serialize)]
+pub struct BeatEntry {
+    /// Beat timestamp in seconds.
+    pub time: f32,
+    /// Beat count within the measure (1 = downbeat).
+    pub beat: i32,
+    /// Whether this beat is a downbeat.
+    pub downbeat: bool,
+}
+
+/// Top-level JSON output structure.
+#[derive(Serialize)]
+pub struct JsonOutput {
+    pub beats: Vec<BeatEntry>,
+    pub downbeats: Vec<f32>,
+    pub bpm: Option<f32>,
+}
+
+/// Build the JSON output structure from a `BeatResult`.
+pub fn build_json_output(result: &BeatResult) -> JsonOutput {
+    let counts = beat_counts(result);
+    let beats = result
+        .beats
+        .iter()
+        .zip(counts.iter())
+        .map(|(&time, &beat)| BeatEntry {
+            time,
+            beat,
+            downbeat: beat == 1,
+        })
+        .collect();
+
+    JsonOutput {
+        beats,
+        downbeats: result.downbeats.clone(),
+        bpm: calculate_bpm(result),
+    }
+}
+
+/// Write JSON output to stdout.
+pub fn print_json_stdout(result: &BeatResult) -> Result<()> {
+    let output = build_json_output(result);
+    let json = serde_json::to_string_pretty(&output)?;
+    println!("{}", json);
+    Ok(())
+}
+
+/// Per-file entry in batch JSON output.
+#[derive(Serialize)]
+pub struct BatchFileOutput {
+    pub file: String,
+    #[serde(flatten)]
+    pub json: JsonOutput,
+    pub duration_secs: f32,
+    pub processing_time_secs: f32,
+}
+
+/// Aggregate metrics for batch processing.
+#[derive(Serialize)]
+pub struct BatchSummary {
+    pub total_files: usize,
+    pub failed_files: usize,
+    pub total_duration_secs: f32,
+    pub total_processing_time_secs: f32,
+    pub model_loading_time_secs: f32,
+    pub realtime_factor: f32,
+}
+
+/// Top-level batch JSON output structure.
+#[derive(Serialize)]
+pub struct BatchOutput {
+    pub files: Vec<BatchFileOutput>,
+    pub summary: BatchSummary,
+}
+
+/// Write batch results as pretty-printed JSON to a file.
+pub fn write_batch_json(path: &Path, output: &BatchOutput) -> Result<()> {
+    let file = std::fs::File::create(path)?;
+    let writer = BufWriter::new(file);
+    serde_json::to_writer_pretty(writer, output)?;
+    Ok(())
 }
 
 /// Generate a single ADSR-enveloped sine click.
@@ -367,6 +452,91 @@ mod tests {
     fn test_calculate_bpm_empty() {
         let result = make_result(vec![], vec![]);
         assert!(calculate_bpm(&result).is_none());
+    }
+
+    #[test]
+    fn test_build_json_output() {
+        let result = make_result(
+            vec![0.5, 1.0, 1.5, 2.0, 2.5, 3.0],
+            vec![0.5, 2.0],
+        );
+        let json_out = build_json_output(&result);
+
+        assert_eq!(json_out.beats.len(), 6);
+        assert_eq!(json_out.downbeats, vec![0.5, 2.0]);
+        assert!(json_out.bpm.is_some());
+
+        // First beat is downbeat
+        assert_eq!(json_out.beats[0].beat, 1);
+        assert!(json_out.beats[0].downbeat);
+
+        // Second beat is not a downbeat
+        assert_eq!(json_out.beats[1].beat, 2);
+        assert!(!json_out.beats[1].downbeat);
+
+        // Fourth beat is downbeat (2.0)
+        assert_eq!(json_out.beats[3].beat, 1);
+        assert!(json_out.beats[3].downbeat);
+
+        // Serializes to valid JSON
+        let json_str = serde_json::to_string(&json_out).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        assert!(parsed["beats"].is_array());
+        assert!(parsed["downbeats"].is_array());
+        assert!(parsed["bpm"].is_number());
+    }
+
+    #[test]
+    fn test_write_batch_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("beat-this.json");
+
+        let result1 = make_result(vec![0.5, 1.0, 1.5, 2.0], vec![0.5]);
+        let result2 = make_result(vec![0.3, 0.6, 0.9], vec![0.3]);
+
+        let batch = BatchOutput {
+            files: vec![
+                BatchFileOutput {
+                    file: "song1.mp3".to_string(),
+                    json: build_json_output(&result1),
+                    duration_secs: 120.0,
+                    processing_time_secs: 1.5,
+                },
+                BatchFileOutput {
+                    file: "song2.wav".to_string(),
+                    json: build_json_output(&result2),
+                    duration_secs: 60.0,
+                    processing_time_secs: 0.8,
+                },
+            ],
+            summary: BatchSummary {
+                total_files: 2,
+                failed_files: 0,
+                total_duration_secs: 180.0,
+                total_processing_time_secs: 2.3,
+                model_loading_time_secs: 0.04,
+                realtime_factor: 78.3,
+            },
+        };
+
+        write_batch_json(&path, &batch).unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+
+        // Check structure
+        assert_eq!(parsed["files"].as_array().unwrap().len(), 2);
+        assert_eq!(parsed["files"][0]["file"], "song1.mp3");
+        assert!(parsed["files"][0]["beats"].is_array());
+        assert!(parsed["files"][0]["bpm"].is_number());
+        assert_eq!(parsed["files"][0]["duration_secs"], 120.0);
+        assert_eq!(parsed["files"][0]["processing_time_secs"], 1.5);
+
+        // Check summary
+        assert_eq!(parsed["summary"]["total_files"], 2);
+        assert_eq!(parsed["summary"]["failed_files"], 0);
+        assert_eq!(parsed["summary"]["total_duration_secs"], 180.0);
+        assert_eq!(parsed["summary"]["realtime_factor"], 78.3);
     }
 
     #[test]

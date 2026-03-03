@@ -1,7 +1,7 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use anyhow::ensure;
+use anyhow::{ensure, Context};
 use clap::Parser;
 
 use beat_this::output;
@@ -15,8 +15,8 @@ const DEFAULT_MEL_MODEL_PATH: &str = "models/mel_spectrogram.onnx";
 #[derive(Parser)]
 #[command(name = "beat-this", version, about = "Beat and downbeat tracking using Beat This! models")]
 struct Cli {
-    /// Path to the input audio file (WAV, MP3, FLAC, OGG)
-    audio_file: PathBuf,
+    /// Path to an audio file or directory of audio files
+    input: PathBuf,
 
     /// Path to the beat model ONNX file
     #[arg(long = "model", default_value = DEFAULT_MODEL_PATH)]
@@ -34,9 +34,13 @@ struct Cli {
     #[arg(long = "runtime", value_enum, default_value = "ort")]
     runtime: Runtime,
 
-    /// Write beat timestamps to a .beats file
-    #[arg(short = 'o', long = "output-beats")]
-    output_beats: Option<PathBuf>,
+    /// Print beats as plain text (tab-separated time and count) instead of JSON
+    #[arg(long = "output-beats")]
+    output_beats: bool,
+
+    /// Recurse into subdirectories (batch mode only)
+    #[arg(short = 'r', long = "recursive")]
+    recursive: bool,
 
     /// Write a click-track WAV file
     #[arg(long = "output-click")]
@@ -96,24 +100,153 @@ fn print_beats_stdout(result: &BeatResult) {
     }
 }
 
-/// Run the full pipeline (audio → mel → inference → postprocessing → output).
-///
-/// Generic over the inference session — works with any backend.
-fn run_pipeline<S: InferenceSession>(bt: &mut beat_this::BeatThis<S>, cli: &Cli) -> anyhow::Result<()> {
-    // Load audio
-    eprintln!("Processing {}...", cli.audio_file.display());
+const AUDIO_EXTENSIONS: &[&str] = &["wav", "mp3", "flac", "ogg"];
+
+/// Find audio files in a directory, optionally recursing into subdirectories.
+fn find_audio_files(dir: &Path, recursive: bool) -> anyhow::Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    collect_audio_files(dir, recursive, &mut files)?;
+    files.sort();
+    Ok(files)
+}
+
+fn collect_audio_files(dir: &Path, recursive: bool, out: &mut Vec<PathBuf>) -> anyhow::Result<()> {
+    let entries = std::fs::read_dir(dir)
+        .with_context(|| format!("Cannot read directory: {}", dir.display()))?;
+
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() && recursive {
+            collect_audio_files(&path, true, out)?;
+        } else if path.is_file() {
+            if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                if AUDIO_EXTENSIONS.contains(&ext.to_lowercase().as_str()) {
+                    out.push(path);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Run batch processing over a directory of audio files.
+fn run_batch<S: InferenceSession>(
+    bt: &mut beat_this::BeatThis<S>,
+    dir: &Path,
+    cli: &Cli,
+    model_loading_secs: f32,
+) -> anyhow::Result<()> {
+    let files = find_audio_files(dir, cli.recursive)?;
+    ensure!(!files.is_empty(), "No audio files found in {}", dir.display());
+
+    eprintln!("Processing {}... ({} files)", dir.display(), files.len());
+
+    let mut file_outputs = Vec::new();
+    let mut total_duration = 0.0f64;
+    let mut total_processing = 0.0f64;
+    let mut failed = 0usize;
+
+    for (i, path) in files.iter().enumerate() {
+        let filename = path
+            .strip_prefix(dir)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .to_string();
+
+        let t = Instant::now();
+        let result = match process_single_file(bt, path, cli) {
+            Ok(r) => r,
+            Err(e) => {
+                failed += 1;
+                eprintln!("  [{}/{}] {} — ERROR: {}", i + 1, files.len(), filename, e);
+                continue;
+            }
+        };
+        let elapsed = t.elapsed().as_secs_f64();
+
+        let json_out = output::build_json_output(&result.beat_result);
+
+        eprintln!(
+            "  [{}/{}] {} — {} beats, {:.1} BPM ({:.2}s)",
+            i + 1,
+            files.len(),
+            filename,
+            result.beat_result.beats.len(),
+            json_out.bpm.unwrap_or(0.0),
+            elapsed
+        );
+
+        if cli.output_beats {
+            let beats_path = path.with_extension("beats");
+            output::write_beats_file(&beats_path, &result.beat_result)?;
+        }
+
+        file_outputs.push(output::BatchFileOutput {
+            file: filename,
+            json: json_out,
+            duration_secs: result.duration_secs,
+            processing_time_secs: elapsed as f32,
+        });
+
+        total_duration += result.duration_secs as f64;
+        total_processing += elapsed;
+    }
+
+    let realtime_factor = if total_processing > 0.0 {
+        total_duration / total_processing
+    } else {
+        0.0
+    };
+
+    let batch = output::BatchOutput {
+        files: file_outputs,
+        summary: output::BatchSummary {
+            total_files: files.len(),
+            failed_files: failed,
+            total_duration_secs: total_duration as f32,
+            total_processing_time_secs: total_processing as f32,
+            model_loading_time_secs: model_loading_secs,
+            realtime_factor: realtime_factor as f32,
+        },
+    };
+
+    let out_path = dir.join("beat-this.json");
+    output::write_batch_json(&out_path, &batch)?;
+    eprintln!(
+        "Wrote {} ({} files, {:.1}s total)",
+        out_path.display(),
+        files.len(),
+        total_processing
+    );
+
+    Ok(())
+}
+
+/// Result of processing a single file (beat result + audio duration).
+struct FileResult {
+    beat_result: BeatResult,
+    duration_secs: f32,
+}
+
+/// Process a single audio file through the pipeline, returning beats and duration.
+fn process_single_file<S: InferenceSession>(
+    bt: &mut beat_this::BeatThis<S>,
+    path: &Path,
+    cli: &Cli,
+) -> anyhow::Result<FileResult> {
     let t = Instant::now();
-    let audio = beat_this::load_audio(&cli.audio_file, 22050)?;
+    let audio = beat_this::load_audio(path, 22050)?;
+    let duration_secs = audio.samples.len() as f32 / audio.sample_rate as f32;
     if cli.verbose {
         eprintln!(
             "[timing] Audio loading: {:.3}s ({} samples, {:.1}s duration)",
             t.elapsed().as_secs_f64(),
             audio.samples.len(),
-            audio.samples.len() as f64 / audio.sample_rate as f64
+            duration_secs
         );
     }
 
-    // Mel spectrogram
     let t = Instant::now();
     let mel = bt.mel.process(&audio.samples)?;
     if cli.verbose {
@@ -124,7 +257,6 @@ fn run_pipeline<S: InferenceSession>(bt: &mut beat_this::BeatThis<S>, cli: &Cli)
         );
     }
 
-    // Beat inference
     let t = Instant::now();
     let (beat_logits, downbeat_logits) = bt.inference.process(&mel)?;
     if cli.verbose {
@@ -134,9 +266,8 @@ fn run_pipeline<S: InferenceSession>(bt: &mut beat_this::BeatThis<S>, cli: &Cli)
         );
     }
 
-    // Post-processing
     let t = Instant::now();
-    let result = bt.post.process(&beat_logits, &downbeat_logits)?;
+    let beat_result = bt.post.process(&beat_logits, &downbeat_logits)?;
     if cli.verbose {
         eprintln!(
             "[timing] Post-processing: {:.3}s",
@@ -144,41 +275,47 @@ fn run_pipeline<S: InferenceSession>(bt: &mut beat_this::BeatThis<S>, cli: &Cli)
         );
     }
 
+    Ok(FileResult {
+        beat_result,
+        duration_secs,
+    })
+}
+
+/// Run the full single-file pipeline (audio → mel → inference → postprocessing → output).
+///
+/// Generic over the inference session — works with any backend.
+fn run_pipeline<S: InferenceSession>(bt: &mut beat_this::BeatThis<S>, cli: &Cli) -> anyhow::Result<()> {
+    eprintln!("Processing {}...", cli.input.display());
+
+    let file_result = process_single_file(bt, &cli.input, cli)?;
+    let result = &file_result.beat_result;
+
     eprintln!(
         "Found {} beats ({} downbeats)",
         result.beats.len(),
         result.downbeats.len()
     );
 
-    // If no output flag was given, print beats to stdout
-    let has_output_flag = cli.output_beats.is_some()
-        || cli.output_click.is_some()
-        || cli.output_mixed.is_some()
-        || cli.show_bpm;
-
-    if !has_output_flag {
-        print_beats_stdout(&result);
-    }
-
-    // Write requested outputs
-    if let Some(ref path) = cli.output_beats {
-        output::write_beats_file(path, &result)?;
-        eprintln!("Wrote beats to {}", path.display());
+    // stdout output: --output-beats prints plain text, otherwise JSON (default)
+    if cli.output_beats {
+        print_beats_stdout(result);
+    } else {
+        output::print_json_stdout(result)?;
     }
 
     if let Some(ref path) = cli.output_click {
-        output::write_click_track(path, &result)?;
+        output::write_click_track(path, result)?;
         eprintln!("Wrote click track to {}", path.display());
     }
 
     if let Some(ref path) = cli.output_mixed {
-        let audio = beat_this::load_audio(&cli.audio_file, 44100)?;
-        output::write_mixed_audio(path, &result, &audio.samples, audio.sample_rate)?;
+        let audio = beat_this::load_audio(&cli.input, 44100)?;
+        output::write_mixed_audio(path, result, &audio.samples, audio.sample_rate)?;
         eprintln!("Wrote mixed audio to {}", path.display());
     }
 
     if cli.show_bpm {
-        match output::calculate_bpm(&result) {
+        match output::calculate_bpm(result) {
             Some(bpm) => println!("{:.1} BPM", bpm),
             None => eprintln!("Could not calculate BPM (too few beats)"),
         }
@@ -190,11 +327,13 @@ fn run_pipeline<S: InferenceSession>(bt: &mut beat_this::BeatThis<S>, cli: &Cli)
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
-    // Validate input file exists
+    let is_batch = cli.input.is_dir();
+
+    // Validate input exists
     ensure!(
-        cli.audio_file.exists(),
-        "Audio file not found: {}",
-        cli.audio_file.display()
+        cli.input.exists(),
+        "Input not found: {}",
+        cli.input.display()
     );
 
     // Resolve model paths and validate
@@ -249,11 +388,16 @@ fn main() -> anyhow::Result<()> {
                 inference: beat_this::BeatInference::new(beat_session),
                 post: beat_this::PostProcessor::default(),
             };
+            let model_loading_secs = t.elapsed().as_secs_f64() as f32;
             if cli.verbose {
-                eprintln!("[timing] Model loading: {:.3}s", t.elapsed().as_secs_f64());
+                eprintln!("[timing] Model loading: {:.3}s", model_loading_secs);
             }
 
-            run_pipeline(&mut bt, &cli)?;
+            if is_batch {
+                run_batch(&mut bt, &cli.input, &cli, model_loading_secs)?;
+            } else {
+                run_pipeline(&mut bt, &cli)?;
+            }
 
             // End ORT profiling
             if cli.profile.is_some() {
@@ -273,11 +417,16 @@ fn main() -> anyhow::Result<()> {
             }
             let runtime = beat_this::runtime::rten::RtenRuntime;
             let mut bt = beat_this::BeatThis::new(&runtime, &mel_path, &beat_path)?;
+            let model_loading_secs = t.elapsed().as_secs_f64() as f32;
             if cli.verbose {
-                eprintln!("[timing] Model loading: {:.3}s", t.elapsed().as_secs_f64());
+                eprintln!("[timing] Model loading: {:.3}s", model_loading_secs);
             }
 
-            run_pipeline(&mut bt, &cli)?;
+            if is_batch {
+                run_batch(&mut bt, &cli.input, &cli, model_loading_secs)?;
+            } else {
+                run_pipeline(&mut bt, &cli)?;
+            }
         }
     }
 
