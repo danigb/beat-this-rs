@@ -11,9 +11,9 @@ The port was made with [Claude](https://claude.ai/)
 
 This is a Rust implementation of the Beat This! model, originally published at ISMIR 2024. The system uses a transformer-based neural network to detect musical beats and downbeats in audio files with high accuracy.
 
-**Original Paper**: "Beat This! Accurate and Generalizable Beat Tracking"
-**Original Repository**: https://github.com/CPJKU/beat_this
-**C++ Port**: https://github.com/mosynthkey/beat_this_cpp
+- **Original Paper**: "Beat This! Accurate and Generalizable Beat Tracking"
+- **Original Repository**: https://github.com/CPJKU/beat_this
+- **C++ Port**: https://github.com/mosynthkey/beat_this_cpp
 
 ## Features
 
@@ -265,6 +265,24 @@ beat-this-rs/
 - **Processing**: Overlapping chunks of 1500 frames (30 seconds at 50 fps)
 - **Standard model**: ~83 MB (32-bit float)
 - **Small model**: ~10 MB
+
+## Performance
+
+Benchmarked on Apple M4 MacBook Pro (2024), comparing against the Python reference implementation (PyTorch, CPU mode, no DBN post-processing):
+
+| File      | Duration | Python | Rust (rten) | Rust (ort) |
+| --------- | -------: | -----: | ----------: | ---------: |
+| short.wav |       9s |   1.8s |        0.7s |       1.2s |
+| test1.mp3 |     4:32 |   5.1s |        4.6s |       4.6s |
+| test2.mp3 |    13:48 |  11.9s |       12.1s |      11.9s |
+
+Both Rust runtimes produce identical beat timestamps. The `rten` backend (pure Rust, no external dependencies) performs on par with `ort` (ONNX Runtime). Processing time is dominated by beat inference, which scales linearly with audio duration.
+
+To run the benchmarks yourself:
+
+```bash
+uv run scripts/integration-test.py
+```
 
 ## Acknowledgments
 
