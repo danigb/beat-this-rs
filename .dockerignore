@@ -1,0 +1,15 @@
+.git/
+target/
+references/
+docs/
+scripts/
+tests/
+integration_test_files/
+tmp/
+.claude/
+.vscode/
+.DS_Store
+*.wav
+*.beats
+*.ckpt
+onnxruntime
