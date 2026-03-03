@@ -18,12 +18,12 @@ name = "beat_this"
 path = "src/lib.rs"
 
 [dependencies]
-ort = { version = "=2.0.0-rc.10", features = [
+ort = { version = "=2.0.0-rc.11", features = [
     "ndarray",
     "load-dynamic",
     "coreml",
 ] }
-ndarray = "0.16"
+ndarray = "0.17"
 rten = { version = "0.24", features = ["fft"] }
 rten-tensor = { version = "0.24" }
 anyhow = "1"

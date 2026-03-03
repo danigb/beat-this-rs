@@ -3,8 +3,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use ndarray::ArrayD;
-use ort::execution_providers::coreml::CoreMLExecutionProvider;
-use ort::execution_providers::ExecutionProvider;
+use ort::ep::{CoreML, ExecutionProvider};
 use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
 use ort::value::{DynValue, Value};
@@ -38,7 +37,7 @@ impl Default for OrtRuntime {
 impl OrtRuntime {
     /// Check if CoreML is available in the loaded ORT runtime.
     pub fn is_coreml_available(&self) -> bool {
-        CoreMLExecutionProvider::default()
+        CoreML::default()
             .is_available()
             .unwrap_or(false)
     }
@@ -55,11 +54,12 @@ impl InferenceRuntime for OrtRuntime {
             GraphOptimizationLevel::Level1 => GraphOptimizationLevel::Level1,
             GraphOptimizationLevel::Level2 => GraphOptimizationLevel::Level2,
             GraphOptimizationLevel::Level3 => GraphOptimizationLevel::Level3,
+            GraphOptimizationLevel::All => GraphOptimizationLevel::All,
         };
         let mut builder = Session::builder()?
             .with_optimization_level(optimization_level)?
             .with_intra_threads(self.intra_threads)?
-            .with_execution_providers([CoreMLExecutionProvider::default().build()])?;
+            .with_execution_providers([CoreML::default().build()])?;
         if let Some(ref profile_path) = self.profiling_path {
             builder = builder.with_profiling(profile_path)?;
         }

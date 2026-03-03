@@ -21,6 +21,7 @@ Usage:
     uv run scripts/integration-test.py
 """
 
+import json
 import subprocess
 import sys
 import time
@@ -97,7 +98,7 @@ def run_rust(audio_path: Path, output_path: Path):
     cmd = [
         str(RUST_BINARY),
         str(audio_path),
-        "-o", str(output_path),
+        "--output-beats",
     ]
     start = time.perf_counter()
     result = subprocess.run(cmd, capture_output=True, text=True)
@@ -107,6 +108,7 @@ def run_rust(audio_path: Path, output_path: Path):
         print(f"    Rust FAILED: {result.stderr.strip()}")
         return None
 
+    output_path.write_text(result.stdout)
     return elapsed
 
 
@@ -256,6 +258,32 @@ def main():
         print(f"Rust total time:   {rs_total:.1f}s (avg {rs_total / len(rs_times):.1f}s)")
         if rs_total > 0:
             print(f"Speedup: {py_total / rs_total:.2f}x")
+
+    # Save report JSON
+    report = {
+        "files_processed": len(audio_files),
+        "matching": matches,
+        "differences": diffs,
+        "failures": failures,
+        "files": [],
+    }
+    for audio_path, py_time, rs_time in zip(audio_files, py_times, rs_times):
+        entry = {
+            "file": str(audio_path.relative_to(ROOT)),
+            "python_time": round(py_time, 3) if py_time is not None else None,
+            "rust_time": round(rs_time, 3) if rs_time is not None else None,
+        }
+        if py_time and rs_time:
+            entry["speedup"] = round(py_time / rs_time, 2)
+        report["files"].append(entry)
+    if py_times and rs_times:
+        report["python_total"] = round(sum(py_times), 3)
+        report["rust_total"] = round(sum(rs_times), 3)
+        report["speedup"] = round(sum(py_times) / sum(rs_times), 2)
+
+    report_path = AUDIO_DIR / "report.json"
+    report_path.write_text(json.dumps(report, indent=2) + "\n")
+    print(f"\nReport saved to {report_path.relative_to(ROOT)}")
 
 
 if __name__ == "__main__":
