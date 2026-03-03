@@ -17,7 +17,7 @@
 | **ort**  | 0.382s     | 0.008s | **0.364s**     | 0.782s | 16 (13 db) |
 | **rten** | 0.020s     | 0.003s | **0.387s**     | 0.423s | 16 (13 db) |
 
-### 01 Test1.mp3 — 4.5 min, 13602 mel frames, 10 chunks
+### 01 test1.mp3 — 4.5 min, 13602 mel frames, 10 chunks
 
 |          | Model Load | Mel    | Beat Inference | Total  | Beats        |
 | -------- | ---------- | ------ | -------------- | ------ | ------------ |
@@ -42,7 +42,7 @@ All three files produce **byte-identical** `.beats` output between ort and rten.
 | File              | ort    | rten   | rten / ort         |
 | ----------------- | ------ | ------ | ------------------ |
 | Short (1 chunk)   | 0.364s | 0.387s | 1.06x (6% slower)  |
-| Test1 (10 chunks) | 3.371s | 3.775s | 1.12x (12% slower) |
+| test1 (10 chunks) | 3.371s | 3.775s | 1.12x (12% slower) |
 | Test2 (7 chunks)  | 2.369s | 2.632s | 1.11x (11% slower) |
 
 rten beat inference is ~6–12% slower than Homebrew ORT CPU. This matches the research estimate of "80–100% of ort on CPU."
@@ -60,7 +60,7 @@ rten loads models in ~20ms vs ort's ~360ms. No dynamic library resolution, no se
 | File  | ort    | rten   | Speedup |
 | ----- | ------ | ------ | ------- |
 | Short | 0.008s | 0.003s | 2.7x    |
-| Test1 | 0.193s | 0.091s | 2.1x    |
+| test1 | 0.193s | 0.091s | 2.1x    |
 | Test2 | 0.147s | 0.066s | 2.2x    |
 
 rten is ~2x faster on mel spectrogram computation (STFT + mel filterbank).
@@ -70,7 +70,7 @@ rten is ~2x faster on mel spectrogram computation (STFT + mel filterbank).
 | File  | ort    | rten       | Winner       |
 | ----- | ------ | ---------- | ------------ |
 | Short | 0.782s | **0.423s** | rten (1.8x)  |
-| Test1 | 4.295s | **4.245s** | rten (1.01x) |
+| test1 | 4.295s | **4.245s** | rten (1.01x) |
 | Test2 | 3.173s | **2.990s** | rten (1.06x) |
 
 rten wins on total wall time for all three files thanks to faster model loading and mel computation, despite slightly slower beat inference.

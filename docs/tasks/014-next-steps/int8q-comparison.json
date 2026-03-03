@@ -1,0 +1,77 @@
+[
+  {
+    "file": "integration_test_files/short.wav",
+    "fp32_time": 1.0319152909796685,
+    "int8_time": 0.710141042014584,
+    "speedup": 1.4531131562995572,
+    "beats": {
+      "ref_count": 16,
+      "test_count": 16,
+      "matched": 16,
+      "missed": 0,
+      "spurious": 0,
+      "max_deviation_ms": 0.0,
+      "mean_deviation_ms": 0.0
+    },
+    "downbeats": {
+      "ref_count": 13,
+      "test_count": 11,
+      "matched": 11,
+      "missed": 2,
+      "spurious": 0,
+      "max_deviation_ms": 0.0,
+      "mean_deviation_ms": 0.0
+    },
+    "passed": true
+  },
+  {
+    "file": "integration_test_files/test1.mp3",
+    "fp32_time": 4.575181916123256,
+    "int8_time": 3.7097216250840575,
+    "speedup": 1.233295211475494,
+    "beats": {
+      "ref_count": 460,
+      "test_count": 460,
+      "matched": 460,
+      "missed": 0,
+      "spurious": 0,
+      "max_deviation_ms": 19.99999999999602,
+      "mean_deviation_ms": 0.13043478260860794
+    },
+    "downbeats": {
+      "ref_count": 122,
+      "test_count": 122,
+      "matched": 122,
+      "missed": 0,
+      "spurious": 0,
+      "max_deviation_ms": 0.0,
+      "mean_deviation_ms": 0.0
+    },
+    "passed": true
+  },
+  {
+    "file": "integration_test_files/test2.mp3",
+    "fp32_time": 12.064344041980803,
+    "int8_time": 10.117407832993194,
+    "speedup": 1.1924342915819393,
+    "beats": {
+      "ref_count": 2259,
+      "test_count": 2261,
+      "matched": 2236,
+      "missed": 23,
+      "spurious": 25,
+      "max_deviation_ms": 19.99999999999602,
+      "mean_deviation_ms": 0.2593917710194993
+    },
+    "downbeats": {
+      "ref_count": 974,
+      "test_count": 960,
+      "matched": 947,
+      "missed": 27,
+      "spurious": 13,
+      "max_deviation_ms": 19.99999999999602,
+      "mean_deviation_ms": 0.2323125659977218
+    },
+    "passed": false
+  }
+]

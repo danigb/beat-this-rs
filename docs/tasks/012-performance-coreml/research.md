@@ -37,7 +37,7 @@ Test file: `integration_test_files/short.wav` (9.3s audio, 468 mel frames)
 | Homebrew ORT 1.24.2 (CPU only) | 0.37s      | **1.6s**       | 2.0s  |
 | Official ORT 1.24.2 (CoreML)   | 2.1s       | **8.0s**       | 10.1s |
 
-Test file: `integration_test_files/Test1.mp3` (4.5 min, 13602 mel frames)
+Test file: `integration_test_files/test1.mp3` (4.5 min, 13602 mel frames)
 
 | Config                                                | Model Load     | Beat Inference | Total |
 | ----------------------------------------------------- | -------------- | -------------- | ----- |
@@ -147,7 +147,7 @@ Added `--threads` CLI flag and changed default from 1 to 0.
 
 Sweet spot is ~10 threads on M1 (8 perf + 2 efficiency cores). Auto (0) is close and portable.
 
-### Thread Count Benchmark — Test1.mp3 (4.5 min audio)
+### Thread Count Benchmark — test1.mp3 (4.5 min audio)
 
 | Threads      | Beat Inference | Total    | Speedup  |
 | ------------ | -------------- | -------- | -------- |

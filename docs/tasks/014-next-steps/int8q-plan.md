@@ -70,10 +70,10 @@ Run both FP32 and Int8 models on the integration test files and compare beat tim
 
 ```bash
 # FP32 baseline
-beat-this "integration_test_files/Test1.mp3" --model models/beat_this.onnx > /tmp/fp32.json
+beat-this "integration_test_files/test1.mp3" --model models/beat_this.onnx > /tmp/fp32.json
 
 # Int8 quantized
-beat-this "integration_test_files/Test1.mp3" --model models/beat_this_int8.onnx > /tmp/int8.json
+beat-this "integration_test_files/test1.mp3" --model models/beat_this_int8.onnx > /tmp/int8.json
 
 # Compare
 diff <(jq '.beats[]' /tmp/fp32.json) <(jq '.beats[]' /tmp/int8.json)
@@ -109,10 +109,10 @@ Compare inference time on a representative audio file (the 4.5-minute test track
 
 ```bash
 # FP32
-beat-this "integration_test_files/Test1.mp3" --model models/beat_this.onnx --verbose 2>&1 | grep "Beat inference"
+beat-this "integration_test_files/test1.mp3" --model models/beat_this.onnx --verbose 2>&1 | grep "Beat inference"
 
 # Int8
-beat-this "integration_test_files/Test1.mp3" --model models/beat_this_int8.onnx --verbose 2>&1 | grep "Beat inference"
+beat-this "integration_test_files/test1.mp3" --model models/beat_this_int8.onnx --verbose 2>&1 | grep "Beat inference"
 ```
 
 **Expected results** (M1 Mac, ORT):
