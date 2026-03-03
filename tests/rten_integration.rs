@@ -1,5 +1,3 @@
-#![cfg(feature = "rten")]
-
 use std::path::Path;
 
 use beat_this::runtime::rten::RtenRuntime;

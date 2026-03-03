@@ -1,3 +1,4 @@
+use std::panic::AssertUnwindSafe;
 use std::path::Path;
 
 use beat_this::mel::{self, MelProcessor};
@@ -7,7 +8,21 @@ use beat_this::InferenceRuntime;
 const MEL_MODEL_PATH: &str = "references/remixatron_rust/MelSpectrogram_Ultimate.onnx";
 const TEST_AUDIO_PATH: &str = "test_files/It Don't Mean A Thing - Kings of Swing.mp3";
 
+/// Check if the ORT dynamic library is available at runtime.
+/// ort with `load-dynamic` panics if the dylib isn't found, so we use catch_unwind.
+fn ort_is_available() -> bool {
+    std::panic::catch_unwind(AssertUnwindSafe(|| {
+        let rt = OrtRuntime::default();
+        let _ = rt.is_coreml_available();
+    }))
+    .is_ok()
+}
+
 fn load_mel_session() -> Option<impl beat_this::InferenceSession> {
+    if !ort_is_available() {
+        eprintln!("Skipping test: ORT runtime not available");
+        return None;
+    }
     let model_path = Path::new(MEL_MODEL_PATH);
     if !model_path.exists() {
         eprintln!("Skipping test: model not found at {MEL_MODEL_PATH}");

@@ -31,7 +31,7 @@ struct Cli {
     model_variant: ModelVariant,
 
     /// Inference runtime to use
-    #[arg(long = "runtime", value_enum, default_value = "ort")]
+    #[arg(long = "runtime", value_enum, default_value = "rten")]
     runtime: Runtime,
 
     /// Print beats as plain text (tab-separated time and count) instead of JSON
@@ -76,7 +76,6 @@ enum ModelVariant {
 #[derive(Clone, clap::ValueEnum)]
 enum Runtime {
     Ort,
-    #[cfg(feature = "rten")]
     Rten,
 }
 
@@ -381,8 +380,12 @@ fn main() -> anyhow::Result<()> {
                     ..Default::default()
                 }
             };
-            let mel_session = runtime.load_model(&mel_path)?;
-            let beat_session = beat_runtime.load_model(&beat_path)?;
+            let mel_session = runtime.load_model(&mel_path)
+                .context("Failed to initialize ort runtime. Is the ONNX Runtime library installed?\n  \
+                    macOS: brew install onnxruntime\n  \
+                    Or use --runtime rten (default) for a pure-Rust runtime with no external dependencies.")?;
+            let beat_session = beat_runtime.load_model(&beat_path)
+                .context("Failed to load beat model with ort runtime.")?;
             let mut bt = beat_this::BeatThis {
                 mel: beat_this::MelProcessor::new(mel_session),
                 inference: beat_this::BeatInference::new(beat_session),
@@ -407,7 +410,6 @@ fn main() -> anyhow::Result<()> {
             }
         }
 
-        #[cfg(feature = "rten")]
         Runtime::Rten => {
             if cli.verbose {
                 eprintln!("[info] Runtime: rten (pure Rust)");

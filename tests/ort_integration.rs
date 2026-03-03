@@ -1,7 +1,18 @@
+use std::panic::AssertUnwindSafe;
 use std::path::Path;
 
 use beat_this::runtime::ort::OrtRuntime;
 use beat_this::{InferenceRuntime, InferenceSession, Tensor};
+
+/// Check if the ORT dynamic library is available at runtime.
+/// ort with `load-dynamic` panics if the dylib isn't found, so we use catch_unwind.
+fn ort_is_available() -> bool {
+    std::panic::catch_unwind(AssertUnwindSafe(|| {
+        let rt = OrtRuntime::default();
+        let _ = rt.is_coreml_available();
+    }))
+    .is_ok()
+}
 
 /// Path to a small ONNX model for testing (from references, gitignored).
 const MEL_MODEL_PATH: &str = "references/remixatron_rust/MelSpectrogram_Ultimate.onnx";
@@ -9,6 +20,10 @@ const BEAT_MODEL_PATH: &str = "references/remixatron_rust/BeatThis_small0.onnx";
 
 #[test]
 fn test_load_mel_model() {
+    if !ort_is_available() {
+        eprintln!("Skipping test: ORT runtime not available");
+        return;
+    }
     let model_path = Path::new(MEL_MODEL_PATH);
     if !model_path.exists() {
         eprintln!("Skipping test: model not found at {MEL_MODEL_PATH}");
@@ -23,6 +38,10 @@ fn test_load_mel_model() {
 
 #[test]
 fn test_mel_inference() {
+    if !ort_is_available() {
+        eprintln!("Skipping test: ORT runtime not available");
+        return;
+    }
     let model_path = Path::new(MEL_MODEL_PATH);
     if !model_path.exists() {
         eprintln!("Skipping test: model not found at {MEL_MODEL_PATH}");
@@ -56,6 +75,10 @@ fn test_mel_inference() {
 
 #[test]
 fn test_load_beat_model() {
+    if !ort_is_available() {
+        eprintln!("Skipping test: ORT runtime not available");
+        return;
+    }
     let model_path = Path::new(BEAT_MODEL_PATH);
     if !model_path.exists() {
         eprintln!("Skipping test: model not found at {BEAT_MODEL_PATH}");
@@ -70,6 +93,10 @@ fn test_load_beat_model() {
 
 #[test]
 fn test_beat_inference() {
+    if !ort_is_available() {
+        eprintln!("Skipping test: ORT runtime not available");
+        return;
+    }
     let model_path = Path::new(BEAT_MODEL_PATH);
     if !model_path.exists() {
         eprintln!("Skipping test: model not found at {BEAT_MODEL_PATH}");
