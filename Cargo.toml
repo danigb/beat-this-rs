@@ -8,6 +8,16 @@ repository = "https://github.com/danigb/beat-this-rs"
 readme = "README.md"
 keywords = ["beat-tracking", "music", "audio", "mir", "onnx"]
 categories = ["multimedia::audio", "science"]
+exclude = [
+    "docs/",
+    "scripts/",
+    "test_files/",
+    "models/",
+    ".github/",
+    ".DS_Store",
+    "Dockerfile",
+    ".dockerignore",
+]
 
 [[bin]]
 name = "beat-this"
