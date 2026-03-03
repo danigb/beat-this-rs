@@ -32,20 +32,20 @@ cd onnxruntime
 
 Test file: `integration_test_files/short.wav` (9.3s audio, 468 mel frames)
 
-| Config | Model Load | Beat Inference | Total |
-| ------ | ---------- | -------------- | ----- |
-| Homebrew ORT 1.24.2 (CPU only) | 0.37s | **1.6s** | 2.0s |
-| Official ORT 1.24.2 (CoreML) | 2.1s | **8.0s** | 10.1s |
+| Config                         | Model Load | Beat Inference | Total |
+| ------------------------------ | ---------- | -------------- | ----- |
+| Homebrew ORT 1.24.2 (CPU only) | 0.37s      | **1.6s**       | 2.0s  |
+| Official ORT 1.24.2 (CoreML)   | 2.1s       | **8.0s**       | 10.1s |
 
-Test file: `integration_test_files/01 Mañana.mp3` (4.5 min, 13602 mel frames)
+Test file: `integration_test_files/Test1.mp3` (4.5 min, 13602 mel frames)
 
-| Config | Model Load | Beat Inference | Total |
-| ------ | ---------- | -------------- | ----- |
-| Homebrew ORT 1.24.2 (CPU only) | 0.42s | **15.7s** | 16.8s |
-| Official ORT 1.24.2 (CoreML) | >120s (killed) | — | — |
-| Official ORT 1.22.0 CoreML NeuralNetwork (prev. task) | 2.4s | **28.7s** | 31.8s |
-| Official ORT 1.22.0 CoreML MLProgram (prev. task) | 11.1s | **62.9s** | 74.7s |
-| Python PyTorch CPU | — | ~5s | ~5s |
+| Config                                                | Model Load     | Beat Inference | Total |
+| ----------------------------------------------------- | -------------- | -------------- | ----- |
+| Homebrew ORT 1.24.2 (CPU only)                        | 0.42s          | **15.7s**      | 16.8s |
+| Official ORT 1.24.2 (CoreML)                          | >120s (killed) | —              | —     |
+| Official ORT 1.22.0 CoreML NeuralNetwork (prev. task) | 2.4s           | **28.7s**      | 31.8s |
+| Official ORT 1.22.0 CoreML MLProgram (prev. task)     | 11.1s          | **62.9s**      | 74.7s |
+| Python PyTorch CPU                                    | —              | ~5s            | ~5s   |
 
 ### CoreML Conclusion
 
@@ -88,36 +88,38 @@ Expand                                7.8     29     0.5%
 
 The most expensive individual MatMul calls are the attention Q*K^T and Attn*V multiplications:
 
-| Layer | Shape | Time (ms) |
-| ----- | ----- | --------- |
-| frontend/blocks.0 attn Q*K^T | [32, 1, 1500, 32] x [32, 1, 32, 1500] | 66.6 |
-| frontend/blocks.0 attn*V | [32, 1, 1500, 1500] x [32, 1, 1500, 32] | 67.6 |
-| frontend/blocks.1 attn Q*K^T | [16, 2, 1500, 32] x [16, 2, 32, 1500] | 67.6 |
-| frontend/blocks.1 attn*V | [16, 2, 1500, 1500] x [16, 2, 1500, 32] | 48.7 |
-| frontend/blocks.2 attn*V | [8, 4, 1500, 1500] x [8, 4, 1500, 32] | 48.4 |
-| frontend/blocks.2 attn Q*K^T | [8, 4, 1500, 32] x [8, 4, 32, 1500] | 38.5 |
-| transformer_blocks/layers.3.0 attn*V | [1, 16, 1500, 1500] x [1, 16, 1500, 32] | 29.6 |
+| Layer                                 | Shape                                   | Time (ms) |
+| ------------------------------------- | --------------------------------------- | --------- |
+| frontend/blocks.0 attn Q\*K^T         | [32, 1, 1500, 32] x [32, 1, 32, 1500]   | 66.6      |
+| frontend/blocks.0 attn\*V             | [32, 1, 1500, 1500] x [32, 1, 1500, 32] | 67.6      |
+| frontend/blocks.1 attn Q\*K^T         | [16, 2, 1500, 32] x [16, 2, 32, 1500]   | 67.6      |
+| frontend/blocks.1 attn\*V             | [16, 2, 1500, 1500] x [16, 2, 1500, 32] | 48.7      |
+| frontend/blocks.2 attn\*V             | [8, 4, 1500, 1500] x [8, 4, 1500, 32]   | 48.4      |
+| frontend/blocks.2 attn Q\*K^T         | [8, 4, 1500, 32] x [8, 4, 32, 1500]     | 38.5      |
+| transformer_blocks/layers.3.0 attn\*V | [1, 16, 1500, 1500] x [1, 16, 1500, 32] | 29.6      |
 
 The frontend "partial attention" blocks (blocks.0-2) are particularly expensive with large batch dimensions (32, 16, 8 attention heads).
 
 ### Top Softmax Calls
 
-| Layer | Shape | Time (ms) |
-| ----- | ----- | --------- |
-| frontend/blocks.0 softmax | [32, 1, 1500, 1500] | 76.9 |
-| frontend/blocks.1 softmax | [16, 2, 1500, 1500] | 26.1 |
-| frontend/blocks.2 softmax | [8, 4, 1500, 1500] | 25.7 |
-| transformer_blocks/layers.1.0 softmax | [1, 16, 1500, 1500] | 13.5 |
+| Layer                                 | Shape               | Time (ms) |
+| ------------------------------------- | ------------------- | --------- |
+| frontend/blocks.0 softmax             | [32, 1, 1500, 1500] | 76.9      |
+| frontend/blocks.1 softmax             | [16, 2, 1500, 1500] | 26.1      |
+| frontend/blocks.2 softmax             | [8, 4, 1500, 1500]  | 25.7      |
+| transformer_blocks/layers.1.0 softmax | [1, 16, 1500, 1500] | 13.5      |
 
 ### Feed-Forward Network MatMuls
 
 The transformer FFN layers also contribute significantly:
+
 - Each FFN has two MatMuls: `[1, 1500, 512]` and `[1, 1500, 2048]` (~27ms each)
 - 6 transformer layers × 2 MatMuls = ~320ms total
 
 ### Model Architecture Summary
 
 The model has:
+
 - **3 frontend "partial attention" blocks** with 32, 16, 8 heads respectively
 - **6 transformer blocks** with 16 heads each
 - **12 attention operations total** (Q*K^T + Softmax + Attn*V each)
@@ -131,37 +133,37 @@ Added `--threads` CLI flag and changed default from 1 to 0.
 
 ### Thread Count Benchmark — short.wav (9.3s audio)
 
-| Threads | Beat Inference | Speedup vs t=1 |
-| ------- | -------------- | --------------- |
-| 1 | 1.72s | 1.0x |
-| 2 | 0.98s | 1.8x |
-| 4 | 0.57s | 3.0x |
-| 6 | 0.47s | 3.7x |
-| 8 | 0.59s | 2.9x |
-| **10** | **0.35s** | **4.9x** |
-| 0 (auto) | 0.40s | 4.3x |
-| 12 | 0.52s | 3.3x |
-| 16 | 0.64s | 2.7x |
+| Threads  | Beat Inference | Speedup vs t=1 |
+| -------- | -------------- | -------------- |
+| 1        | 1.72s          | 1.0x           |
+| 2        | 0.98s          | 1.8x           |
+| 4        | 0.57s          | 3.0x           |
+| 6        | 0.47s          | 3.7x           |
+| 8        | 0.59s          | 2.9x           |
+| **10**   | **0.35s**      | **4.9x**       |
+| 0 (auto) | 0.40s          | 4.3x           |
+| 12       | 0.52s          | 3.3x           |
+| 16       | 0.64s          | 2.7x           |
 
 Sweet spot is ~10 threads on M1 (8 perf + 2 efficiency cores). Auto (0) is close and portable.
 
-### Thread Count Benchmark — 01 Mañana.mp3 (4.5 min audio)
+### Thread Count Benchmark — Test1.mp3 (4.5 min audio)
 
-| Threads | Beat Inference | Total | Speedup |
-| ------- | -------------- | ----- | ------- |
-| 1 | 15.7s | 16.8s | 1.0x |
-| 10 | 3.9s | 4.9s | 4.0x |
-| **0 (auto)** | **3.4s** | **4.4s** | **4.6x** |
+| Threads      | Beat Inference | Total    | Speedup  |
+| ------------ | -------------- | -------- | -------- |
+| 1            | 15.7s          | 16.8s    | 1.0x     |
+| 10           | 3.9s           | 4.9s     | 4.0x     |
+| **0 (auto)** | **3.4s**       | **4.4s** | **4.6x** |
 
 ### Result
 
 With `intra_threads: 0`, Rust now matches Python performance:
 
-| Runtime | Beat Inference (4.5-min track) |
-| ------- | ------------------------------ |
-| Python PyTorch CPU | ~5s |
-| **Rust ORT CPU (threads=0)** | **3.4s** |
-| Rust ORT CPU (threads=1, old default) | 15.7s |
+| Runtime                               | Beat Inference (4.5-min track) |
+| ------------------------------------- | ------------------------------ |
+| Python PyTorch CPU                    | ~5s                            |
+| **Rust ORT CPU (threads=0)**          | **3.4s**                       |
+| Rust ORT CPU (threads=1, old default) | 15.7s                          |
 
 **Rust is now ~1.5x faster than Python** for beat inference, not 3x slower.
 
@@ -207,31 +209,31 @@ Note: A naive FP16 conversion (without the block list) fails because the `Range`
 
 ### FP16 Benchmark — short.wav (9.3s audio, auto threads)
 
-| Model | Size | Beat Inference | Total |
-| ----- | ---- | -------------- | ----- |
-| Standard (FP32) | 79MB | 0.52s | 0.89s |
-| FP16 | 41MB | 0.56s | 1.22s |
+| Model           | Size | Beat Inference | Total |
+| --------------- | ---- | -------------- | ----- |
+| Standard (FP32) | 79MB | 0.52s          | 0.89s |
+| FP16            | 41MB | 0.56s          | 1.22s |
 
 **No speed improvement.** On CPU, FP16 tensors are cast back to FP32 for computation since x86/ARM SIMD doesn't natively compute in FP16. The model is just smaller on disk (41MB vs 79MB). Model loading is slightly slower due to cast overhead.
 
 ## 7. Small Model Comparison
 
-| Model | Size | Beat Inference | Beats Found |
-| ----- | ---- | -------------- | ----------- |
-| Standard | 79MB | 0.52s | 16 (13 downbeats) |
-| Small (small1.onnx) | ~10MB | 0.33s | 16 (12 downbeats) |
+| Model               | Size  | Beat Inference | Beats Found       |
+| ------------------- | ----- | -------------- | ----------------- |
+| Standard            | 79MB  | 0.52s          | 16 (13 downbeats) |
+| Small (small1.onnx) | ~10MB | 0.33s          | 16 (12 downbeats) |
 
 The small model is **37% faster** with nearly identical beat detection (1 fewer downbeat). Could be offered as a "fast mode" for real-time use cases.
 
 ## 8. Summary
 
-| Optimization | Impact |
-| ------------ | ------ |
-| **Thread tuning (1 → auto)** | **4.6x speedup (the fix)** |
-| ORT Transformer Optimizer | No effect (non-standard attention pattern) |
-| FP16 conversion | No speed gain (CPU casts back to FP32) |
-| Small model | 37% faster, slightly less accurate |
-| CoreML | 5x slower (dead end) |
+| Optimization                 | Impact                                     |
+| ---------------------------- | ------------------------------------------ |
+| **Thread tuning (1 → auto)** | **4.6x speedup (the fix)**                 |
+| ORT Transformer Optimizer    | No effect (non-standard attention pattern) |
+| FP16 conversion              | No speed gain (CPU casts back to FP32)     |
+| Small model                  | 37% faster, slightly less accurate         |
+| CoreML                       | 5x slower (dead end)                       |
 
 ## Files Changed
 
