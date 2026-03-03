@@ -4,7 +4,8 @@ references/
 tmp/
 target/
 integration_test_files/
-models/
+models/*
+!models/mel_spectrogram.onnx
 *.wav
 *.beats
 onnxruntime

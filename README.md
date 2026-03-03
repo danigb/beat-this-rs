@@ -79,11 +79,31 @@ Then run with `--runtime ort`.
 
 ## Model Setup
 
-Place the ONNX model files in the `models/` directory:
+The mel spectrogram model (`models/mel_spectrogram.onnx`) is included in the repository. To download and convert the beat tracking model, run:
+
+```bash
+./scripts/download-models.sh
+```
+
+This requires Python 3.10+ and [uv](https://docs.astral.sh/uv/). Alternatively, download and convert manually:
+
+```bash
+uv run scripts/ckpt2onnx.py final0
+mv models/final0.onnx models/beat_this.onnx
+```
+
+For the small model (~10 MB, optional):
+
+```bash
+uv run scripts/ckpt2onnx.py small0
+mv models/small0.onnx models/beat_this_small.onnx
+```
+
+After setup, the `models/` directory should contain:
 
 ```
 models/
-├── mel_spectrogram.onnx    # Mel preprocessing model (~270 KB)
+├── mel_spectrogram.onnx    # Included in repo (~270 KB)
 ├── beat_this.onnx          # Standard model (~83 MB)
 └── beat_this_small.onnx    # Small model (~10 MB, optional)
 ```
@@ -240,7 +260,7 @@ beat-this-rs/
 │       ├── mod.rs            # Runtime trait abstractions
 │       ├── ort.rs            # ONNX Runtime backend (CoreML on macOS)
 │       └── rten.rs           # Pure-Rust backend
-├── models/                   # ONNX model files (not in repo)
+├── models/                   # ONNX model files (mel model included, beat models downloaded)
 ├── tests/                    # Integration tests
 ├── references/               # Reference implementations
 └── Cargo.toml

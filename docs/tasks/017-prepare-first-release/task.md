@@ -1,0 +1,3 @@
+I want to prepare a first release. It will be v0.1.0
+
+Create a list of what is missing ranked from required to good to have. Review code, code comments, licenses, etc...
