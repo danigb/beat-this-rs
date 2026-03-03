@@ -46,10 +46,12 @@ The system consists of four main components:
 
 ### From Source
 
+Requires [uv](https://docs.astral.sh/uv/) (for Python model download scripts).
+
 ```bash
 git clone git@github.com:danigb/beat-this-rs.git
 cd beat-this-rs
-./scripts/download-models.sh    # Download beat tracking model
+./scripts/download-models.sh    # Downloads model via uv run
 cargo build --release
 ```
 
@@ -70,13 +72,13 @@ Then run with `--runtime ort`.
 
 ## Model Setup
 
-The mel spectrogram model (`models/mel_spectrogram.onnx`) is included in the repository. To download and convert the beat tracking model, run:
+The mel spectrogram model (`models/mel_spectrogram.onnx`) is included in the repository. To download and convert the beat tracking model:
 
 ```bash
 ./scripts/download-models.sh
 ```
 
-This requires Python 3.10+ and [uv](https://docs.astral.sh/uv/). Alternatively, download and convert manually:
+This uses [uv](https://docs.astral.sh/uv/) internally to manage Python dependencies. Alternatively, download and convert manually:
 
 ```bash
 uv run scripts/ckpt2onnx.py final0
@@ -98,6 +100,8 @@ models/
 ├── beat_this.onnx          # Standard model (~83 MB)
 └── beat_this_small.onnx    # Small model (~10 MB, optional)
 ```
+
+Visit [original repo](https://github.com/CPJKU/beat_this?tab=readme-ov-file#available-models) for available models
 
 ## Usage
 

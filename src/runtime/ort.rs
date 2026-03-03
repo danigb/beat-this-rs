@@ -37,9 +37,7 @@ impl Default for OrtRuntime {
 impl OrtRuntime {
     /// Check if CoreML is available in the loaded ORT runtime.
     pub fn is_coreml_available(&self) -> bool {
-        CoreML::default()
-            .is_available()
-            .unwrap_or(false)
+        CoreML::default().is_available().unwrap_or(false)
     }
 }
 
