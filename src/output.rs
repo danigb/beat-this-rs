@@ -215,14 +215,13 @@ pub fn write_json_file(path: &Path, result: &BeatResult) -> Result<()> {
     Ok(())
 }
 
-/// Per-file entry in batch JSON output.
+/// Per-file entry in batch summary JSON (no beat data, just metadata).
 #[derive(Serialize)]
-pub struct BatchFileOutput {
-    pub file: String,
-    #[serde(flatten)]
-    pub json: JsonOutput,
+pub struct BatchFileEntry {
+    pub input: String,
     pub duration_secs: f32,
     pub processing_time_secs: f32,
+    pub outputs: Vec<String>,
 }
 
 /// Aggregate metrics for batch processing.
@@ -236,15 +235,15 @@ pub struct BatchSummary {
     pub realtime_factor: f32,
 }
 
-/// Top-level batch JSON output structure.
+/// Top-level batch summary JSON (process metadata only).
 #[derive(Serialize)]
-pub struct BatchOutput {
-    pub files: Vec<BatchFileOutput>,
+pub struct BatchSummaryOutput {
+    pub files: Vec<BatchFileEntry>,
     pub summary: BatchSummary,
 }
 
-/// Write batch results as pretty-printed JSON to a file.
-pub fn write_batch_json(path: &Path, output: &BatchOutput) -> Result<()> {
+/// Write batch summary as pretty-printed JSON to a file.
+pub fn write_batch_json(path: &Path, output: &BatchSummaryOutput) -> Result<()> {
     let file = std::fs::File::create(path)?;
     let writer = BufWriter::new(file);
     serde_json::to_writer_pretty(writer, output)?;
@@ -481,24 +480,21 @@ mod tests {
     #[test]
     fn test_write_batch_json() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("beat-this.json");
+        let path = dir.path().join("beat_this.json");
 
-        let result1 = make_result(vec![0.5, 1.0, 1.5, 2.0], vec![0.5]);
-        let result2 = make_result(vec![0.3, 0.6, 0.9], vec![0.3]);
-
-        let batch = BatchOutput {
+        let batch = BatchSummaryOutput {
             files: vec![
-                BatchFileOutput {
-                    file: "song1.mp3".to_string(),
-                    json: build_json_output(&result1),
+                BatchFileEntry {
+                    input: "song1.mp3".to_string(),
                     duration_secs: 120.0,
                     processing_time_secs: 1.5,
+                    outputs: vec!["song1.json".to_string(), "song1.beats".to_string()],
                 },
-                BatchFileOutput {
-                    file: "song2.wav".to_string(),
-                    json: build_json_output(&result2),
+                BatchFileEntry {
+                    input: "song2.wav".to_string(),
                     duration_secs: 60.0,
                     processing_time_secs: 0.8,
+                    outputs: vec!["song2.json".to_string()],
                 },
             ],
             summary: BatchSummary {
@@ -516,13 +512,18 @@ mod tests {
         let content = std::fs::read_to_string(&path).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
 
-        // Check structure
+        // Check file entries (summary only, no beat data)
         assert_eq!(parsed["files"].as_array().unwrap().len(), 2);
-        assert_eq!(parsed["files"][0]["file"], "song1.mp3");
-        assert!(parsed["files"][0]["beats"].is_array());
-        assert!(parsed["files"][0]["bpm"].is_number());
+        assert_eq!(parsed["files"][0]["input"], "song1.mp3");
         assert_eq!(parsed["files"][0]["duration_secs"], 120.0);
         assert_eq!(parsed["files"][0]["processing_time_secs"], 1.5);
+        assert_eq!(
+            parsed["files"][0]["outputs"],
+            serde_json::json!(["song1.json", "song1.beats"])
+        );
+        // No beat data in summary
+        assert!(parsed["files"][0]["beats"].is_null());
+        assert!(parsed["files"][0]["bpm"].is_null());
 
         // Check summary
         assert_eq!(parsed["summary"]["total_files"], 2);

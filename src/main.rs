@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use anyhow::{ensure, Context};
+use anyhow::{bail, ensure, Context};
 use clap::Parser;
 
 use beat_this::output;
@@ -19,8 +19,8 @@ const DEFAULT_MEL_MODEL_PATH: &str = "models/mel_spectrogram.onnx";
     about = "Beat and downbeat tracking using Beat This! models"
 )]
 struct Cli {
-    /// Path to an audio file or directory of audio files
-    input: PathBuf,
+    /// Path to an audio file, directory, or glob pattern (e.g. "folder/**/*.mp3")
+    input: String,
 
     /// Path to the beat model ONNX file
     #[arg(long = "model", default_value = DEFAULT_MODEL_PATH)]
@@ -73,9 +73,135 @@ enum Runtime {
     Rten,
 }
 
-/// Returns true if any output flag (--json, --beats, --click, --mix) is set.
-fn has_output_flags(cli: &Cli) -> bool {
-    cli.json.is_some() || cli.beats.is_some() || cli.click.is_some() || cli.mix.is_some()
+// --- Input resolution ---
+
+/// Resolved input: either a single file or a batch of files.
+enum InputMode {
+    SingleFile(PathBuf),
+    Batch {
+        files: Vec<PathBuf>,
+        summary_dir: PathBuf,
+    },
+}
+
+const AUDIO_EXTENSIONS: &[&str] = &["wav", "mp3", "flac", "ogg"];
+
+/// Check if a path has an audio file extension.
+fn is_audio_extension(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|ext| AUDIO_EXTENSIONS.contains(&ext.to_lowercase().as_str()))
+}
+
+/// Resolve the input argument into a single file or batch of files.
+fn resolve_input(input: &str, recursive: bool) -> anyhow::Result<InputMode> {
+    let path = Path::new(input);
+
+    // 1. Existing file
+    if path.is_file() {
+        return Ok(InputMode::SingleFile(path.to_path_buf()));
+    }
+
+    // 2. Existing directory
+    if path.is_dir() {
+        let files = find_audio_files(path, recursive)?;
+        ensure!(
+            !files.is_empty(),
+            "No audio files found in {}",
+            path.display()
+        );
+        return Ok(InputMode::Batch {
+            files,
+            summary_dir: path.to_path_buf(),
+        });
+    }
+
+    // 3. Glob pattern
+    if input.contains('*') || input.contains('?') || input.contains('[') {
+        let mut files: Vec<PathBuf> = glob::glob(input)
+            .with_context(|| format!("Invalid glob pattern: {}", input))?
+            .filter_map(|e| e.ok())
+            .filter(|p| p.is_file() && is_audio_extension(p))
+            .collect();
+        files.sort();
+        ensure!(
+            !files.is_empty(),
+            "No audio files matched pattern: {}",
+            input
+        );
+        let summary_dir = std::env::current_dir()?;
+        return Ok(InputMode::Batch { files, summary_dir });
+    }
+
+    // 4. Nothing matched
+    bail!("Input not found: {}", input);
+}
+
+/// Find audio files in a directory, optionally recursing into subdirectories.
+fn find_audio_files(dir: &Path, recursive: bool) -> anyhow::Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    collect_audio_files(dir, recursive, &mut files)?;
+    files.sort();
+    Ok(files)
+}
+
+fn collect_audio_files(dir: &Path, recursive: bool, out: &mut Vec<PathBuf>) -> anyhow::Result<()> {
+    let entries = std::fs::read_dir(dir)
+        .with_context(|| format!("Cannot read directory: {}", dir.display()))?;
+
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() && recursive {
+            collect_audio_files(&path, true, out)?;
+        } else if path.is_file() && is_audio_extension(&path) {
+            out.push(path);
+        }
+    }
+    Ok(())
+}
+
+// --- Output flags ---
+
+/// Decoupled output flags for write_outputs (so batch mode can override defaults).
+struct OutputFlags {
+    json: Option<String>,
+    beats: Option<String>,
+    click: Option<String>,
+    mix: Option<String>,
+    overwrite: bool,
+}
+
+impl OutputFlags {
+    /// Build from CLI args directly.
+    fn from_cli(cli: &Cli) -> Self {
+        Self {
+            json: cli.json.clone(),
+            beats: cli.beats.clone(),
+            click: cli.click.clone(),
+            mix: cli.mix.clone(),
+            overwrite: cli.overwrite,
+        }
+    }
+
+    /// Build for batch mode: if no flags set, default to --json (auto-named).
+    fn for_batch(cli: &Cli) -> Self {
+        if cli.json.is_some() || cli.beats.is_some() || cli.click.is_some() || cli.mix.is_some() {
+            Self::from_cli(cli)
+        } else {
+            Self {
+                json: Some(String::new()),
+                beats: None,
+                click: None,
+                mix: None,
+                overwrite: cli.overwrite,
+            }
+        }
+    }
+
+    fn has_flags(&self) -> bool {
+        self.json.is_some() || self.beats.is_some() || self.click.is_some() || self.mix.is_some()
+    }
 }
 
 /// Resolve an output file path from a flag value and input file path.
@@ -110,66 +236,163 @@ fn write_if_needed(
     Ok(true)
 }
 
-const AUDIO_EXTENSIONS: &[&str] = &["wav", "mp3", "flac", "ogg"];
+/// Write all requested outputs for a single file, returning list of written file names.
+fn write_outputs(
+    input: &Path,
+    result: &BeatResult,
+    flags: &OutputFlags,
+) -> anyhow::Result<Vec<String>> {
+    let mut written = Vec::new();
 
-/// Find audio files in a directory, optionally recursing into subdirectories.
-fn find_audio_files(dir: &Path, recursive: bool) -> anyhow::Result<Vec<PathBuf>> {
-    let mut files = Vec::new();
-    collect_audio_files(dir, recursive, &mut files)?;
-    files.sort();
-    Ok(files)
-}
-
-fn collect_audio_files(dir: &Path, recursive: bool, out: &mut Vec<PathBuf>) -> anyhow::Result<()> {
-    let entries = std::fs::read_dir(dir)
-        .with_context(|| format!("Cannot read directory: {}", dir.display()))?;
-
-    for entry in entries {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_dir() && recursive {
-            collect_audio_files(&path, true, out)?;
-        } else if path.is_file() {
-            if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                if AUDIO_EXTENSIONS.contains(&ext.to_lowercase().as_str()) {
-                    out.push(path);
-                }
-            }
+    if let Some(path) = resolve_output_path(input, &flags.json, "json") {
+        if write_if_needed(&path, flags.overwrite, |p| {
+            output::write_json_file(p, result)
+        })? {
+            written.push(path.display().to_string());
         }
     }
+
+    if let Some(path) = resolve_output_path(input, &flags.beats, "beats") {
+        if write_if_needed(&path, flags.overwrite, |p| {
+            output::write_beats_file(p, result)
+        })? {
+            written.push(path.display().to_string());
+        }
+    }
+
+    if let Some(path) = resolve_output_path(input, &flags.click, "click.wav") {
+        if write_if_needed(&path, flags.overwrite, |p| {
+            output::write_click_track(p, result)
+        })? {
+            written.push(path.display().to_string());
+        }
+    }
+
+    if let Some(path) = resolve_output_path(input, &flags.mix, "mix.wav") {
+        let write_mix = |p: &Path| -> anyhow::Result<()> {
+            let audio = beat_this::load_audio(input, 44100)?;
+            output::write_mixed_audio(p, result, &audio.samples, audio.sample_rate)?;
+            Ok(())
+        };
+        if write_if_needed(&path, flags.overwrite, write_mix)? {
+            written.push(path.display().to_string());
+        }
+    }
+
+    Ok(written)
+}
+
+// --- Processing ---
+
+/// Result of processing a single file (beat result + audio duration).
+struct FileResult {
+    beat_result: BeatResult,
+    duration_secs: f32,
+}
+
+/// Process a single audio file through the pipeline, returning beats and duration.
+fn process_single_file<S: InferenceSession>(
+    bt: &mut beat_this::BeatThis<S>,
+    path: &Path,
+    verbose: bool,
+) -> anyhow::Result<FileResult> {
+    let t = Instant::now();
+    let audio = beat_this::load_audio(path, 22050)?;
+    let duration_secs = audio.samples.len() as f32 / audio.sample_rate as f32;
+    if verbose {
+        eprintln!(
+            "[timing] Audio loading: {:.3}s ({} samples, {:.1}s duration)",
+            t.elapsed().as_secs_f64(),
+            audio.samples.len(),
+            duration_secs
+        );
+    }
+
+    let t = Instant::now();
+    let mel = bt.mel.process(&audio.samples)?;
+    if verbose {
+        eprintln!(
+            "[timing] Mel spectrogram: {:.3}s ({} frames)",
+            t.elapsed().as_secs_f64(),
+            mel.shape[1]
+        );
+    }
+
+    let t = Instant::now();
+    let (beat_logits, downbeat_logits) = bt.inference.process(&mel)?;
+    if verbose {
+        eprintln!("[timing] Beat inference: {:.3}s", t.elapsed().as_secs_f64());
+    }
+
+    let t = Instant::now();
+    let beat_result = bt.post.process(&beat_logits, &downbeat_logits)?;
+    if verbose {
+        eprintln!(
+            "[timing] Post-processing: {:.3}s",
+            t.elapsed().as_secs_f64()
+        );
+    }
+
+    Ok(FileResult {
+        beat_result,
+        duration_secs,
+    })
+}
+
+/// Run the full single-file pipeline (audio → mel → inference → postprocessing → output).
+fn run_pipeline<S: InferenceSession>(
+    bt: &mut beat_this::BeatThis<S>,
+    cli: &Cli,
+    input_path: &Path,
+) -> anyhow::Result<()> {
+    eprintln!("Processing {}...", input_path.display());
+
+    let file_result = process_single_file(bt, input_path, cli.verbose)?;
+    let result = &file_result.beat_result;
+
+    let json_out = output::build_json_output(result);
+    eprintln!(
+        "Found {} beats ({} downbeats, {:.1} BPM)",
+        result.beats.len(),
+        result.downbeats.len(),
+        json_out.bpm.unwrap_or(0.0),
+    );
+
+    let flags = OutputFlags::from_cli(cli);
+    if !flags.has_flags() {
+        // Default: JSON to stdout
+        output::print_json_stdout(result)?;
+    } else {
+        let written = write_outputs(input_path, result, &flags)?;
+        if !written.is_empty() {
+            eprintln!("Wrote {}", written.join(", "));
+        }
+    }
+
     Ok(())
 }
 
-/// Run batch processing over a directory of audio files.
+/// Run batch processing over a list of audio files.
 fn run_batch<S: InferenceSession>(
     bt: &mut beat_this::BeatThis<S>,
-    dir: &Path,
+    files: &[PathBuf],
+    summary_dir: &Path,
     cli: &Cli,
     model_loading_secs: f32,
 ) -> anyhow::Result<()> {
-    let files = find_audio_files(dir, cli.recursive)?;
-    ensure!(
-        !files.is_empty(),
-        "No audio files found in {}",
-        dir.display()
-    );
+    eprintln!("Processing {} files...", files.len());
 
-    eprintln!("Processing {}... ({} files)", dir.display(), files.len());
-
-    let mut file_outputs = Vec::new();
+    let flags = OutputFlags::for_batch(cli);
+    let mut file_entries = Vec::new();
     let mut total_duration = 0.0f64;
     let mut total_processing = 0.0f64;
     let mut failed = 0usize;
 
     for (i, path) in files.iter().enumerate() {
-        let filename = path
-            .strip_prefix(dir)
-            .unwrap_or(path)
-            .to_string_lossy()
-            .to_string();
+        let filename = path.to_string_lossy().to_string();
 
         let t = Instant::now();
-        let result = match process_single_file(bt, path, cli) {
+        let result = match process_single_file(bt, path, cli.verbose) {
             Ok(r) => r,
             Err(e) => {
                 failed += 1;
@@ -181,12 +404,7 @@ fn run_batch<S: InferenceSession>(
 
         let json_out = output::build_json_output(&result.beat_result);
 
-        // Write per-file outputs if any output flags are set
-        let written = if has_output_flags(cli) {
-            write_outputs(path, &result.beat_result, cli)?
-        } else {
-            Vec::new()
-        };
+        let written = write_outputs(path, &result.beat_result, &flags)?;
 
         if written.is_empty() {
             eprintln!(
@@ -211,11 +429,11 @@ fn run_batch<S: InferenceSession>(
             );
         }
 
-        file_outputs.push(output::BatchFileOutput {
-            file: filename,
-            json: json_out,
+        file_entries.push(output::BatchFileEntry {
+            input: filename,
             duration_secs: result.duration_secs,
             processing_time_secs: elapsed as f32,
+            outputs: written,
         });
 
         total_duration += result.duration_secs as f64;
@@ -228,163 +446,27 @@ fn run_batch<S: InferenceSession>(
         0.0
     };
 
-    // Only write batch summary JSON when no per-file output flags are set
-    if !has_output_flags(cli) {
-        let batch = output::BatchOutput {
-            files: file_outputs,
-            summary: output::BatchSummary {
-                total_files: files.len(),
-                failed_files: failed,
-                total_duration_secs: total_duration as f32,
-                total_processing_time_secs: total_processing as f32,
-                model_loading_time_secs: model_loading_secs,
-                realtime_factor: realtime_factor as f32,
-            },
-        };
+    // Always write batch summary
+    let batch = output::BatchSummaryOutput {
+        files: file_entries,
+        summary: output::BatchSummary {
+            total_files: files.len(),
+            failed_files: failed,
+            total_duration_secs: total_duration as f32,
+            total_processing_time_secs: total_processing as f32,
+            model_loading_time_secs: model_loading_secs,
+            realtime_factor: realtime_factor as f32,
+        },
+    };
 
-        let out_path = dir.join("beat-this.json");
-        output::write_batch_json(&out_path, &batch)?;
-        eprintln!(
-            "Wrote {} ({} files, {:.1}s total)",
-            out_path.display(),
-            files.len(),
-            total_processing
-        );
-    } else {
-        eprintln!(
-            "Processed {} files ({:.1}s total)",
-            files.len(),
-            total_processing
-        );
-    }
-
-    Ok(())
-}
-
-/// Result of processing a single file (beat result + audio duration).
-struct FileResult {
-    beat_result: BeatResult,
-    duration_secs: f32,
-}
-
-/// Process a single audio file through the pipeline, returning beats and duration.
-fn process_single_file<S: InferenceSession>(
-    bt: &mut beat_this::BeatThis<S>,
-    path: &Path,
-    cli: &Cli,
-) -> anyhow::Result<FileResult> {
-    let t = Instant::now();
-    let audio = beat_this::load_audio(path, 22050)?;
-    let duration_secs = audio.samples.len() as f32 / audio.sample_rate as f32;
-    if cli.verbose {
-        eprintln!(
-            "[timing] Audio loading: {:.3}s ({} samples, {:.1}s duration)",
-            t.elapsed().as_secs_f64(),
-            audio.samples.len(),
-            duration_secs
-        );
-    }
-
-    let t = Instant::now();
-    let mel = bt.mel.process(&audio.samples)?;
-    if cli.verbose {
-        eprintln!(
-            "[timing] Mel spectrogram: {:.3}s ({} frames)",
-            t.elapsed().as_secs_f64(),
-            mel.shape[1]
-        );
-    }
-
-    let t = Instant::now();
-    let (beat_logits, downbeat_logits) = bt.inference.process(&mel)?;
-    if cli.verbose {
-        eprintln!("[timing] Beat inference: {:.3}s", t.elapsed().as_secs_f64());
-    }
-
-    let t = Instant::now();
-    let beat_result = bt.post.process(&beat_logits, &downbeat_logits)?;
-    if cli.verbose {
-        eprintln!(
-            "[timing] Post-processing: {:.3}s",
-            t.elapsed().as_secs_f64()
-        );
-    }
-
-    Ok(FileResult {
-        beat_result,
-        duration_secs,
-    })
-}
-
-/// Write all requested outputs for a single file, returning list of written file names.
-fn write_outputs(input: &Path, result: &BeatResult, cli: &Cli) -> anyhow::Result<Vec<String>> {
-    let mut written = Vec::new();
-
-    if let Some(path) = resolve_output_path(input, &cli.json, "json") {
-        if write_if_needed(&path, cli.overwrite, |p| output::write_json_file(p, result))? {
-            written.push(path.display().to_string());
-        }
-    }
-
-    if let Some(path) = resolve_output_path(input, &cli.beats, "beats") {
-        if write_if_needed(&path, cli.overwrite, |p| {
-            output::write_beats_file(p, result)
-        })? {
-            written.push(path.display().to_string());
-        }
-    }
-
-    if let Some(path) = resolve_output_path(input, &cli.click, "click.wav") {
-        if write_if_needed(&path, cli.overwrite, |p| {
-            output::write_click_track(p, result)
-        })? {
-            written.push(path.display().to_string());
-        }
-    }
-
-    if let Some(path) = resolve_output_path(input, &cli.mix, "mix.wav") {
-        let write_mix = |p: &Path| -> anyhow::Result<()> {
-            let audio = beat_this::load_audio(input, 44100)?;
-            output::write_mixed_audio(p, result, &audio.samples, audio.sample_rate)?;
-            Ok(())
-        };
-        if write_if_needed(&path, cli.overwrite, write_mix)? {
-            written.push(path.display().to_string());
-        }
-    }
-
-    Ok(written)
-}
-
-/// Run the full single-file pipeline (audio → mel → inference → postprocessing → output).
-///
-/// Generic over the inference session — works with any backend.
-fn run_pipeline<S: InferenceSession>(
-    bt: &mut beat_this::BeatThis<S>,
-    cli: &Cli,
-) -> anyhow::Result<()> {
-    eprintln!("Processing {}...", cli.input.display());
-
-    let file_result = process_single_file(bt, &cli.input, cli)?;
-    let result = &file_result.beat_result;
-
-    let json_out = output::build_json_output(result);
+    let out_path = summary_dir.join("beat_this.json");
+    output::write_batch_json(&out_path, &batch)?;
     eprintln!(
-        "Found {} beats ({} downbeats, {:.1} BPM)",
-        result.beats.len(),
-        result.downbeats.len(),
-        json_out.bpm.unwrap_or(0.0),
+        "Wrote {} ({} files, {:.1}s total)",
+        out_path.display(),
+        files.len(),
+        total_processing
     );
-
-    if !has_output_flags(cli) {
-        // Default: JSON to stdout
-        output::print_json_stdout(result)?;
-    } else {
-        let written = write_outputs(&cli.input, result, cli)?;
-        if !written.is_empty() {
-            eprintln!("Wrote {}", written.join(", "));
-        }
-    }
 
     Ok(())
 }
@@ -392,14 +474,8 @@ fn run_pipeline<S: InferenceSession>(
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
-    let is_batch = cli.input.is_dir();
-
-    // Validate input exists
-    ensure!(
-        cli.input.exists(),
-        "Input not found: {}",
-        cli.input.display()
-    );
+    // Resolve input into single file or batch
+    let input_mode = resolve_input(&cli.input, cli.recursive)?;
 
     // Resolve model paths and validate
     let mel_path = cli.mel_model_path.clone();
@@ -459,10 +535,11 @@ fn main() -> anyhow::Result<()> {
                 eprintln!("[timing] Model loading: {:.3}s", model_loading_secs);
             }
 
-            if is_batch {
-                run_batch(&mut bt, &cli.input, &cli, model_loading_secs)?;
-            } else {
-                run_pipeline(&mut bt, &cli)?;
+            match &input_mode {
+                InputMode::SingleFile(path) => run_pipeline(&mut bt, &cli, path)?,
+                InputMode::Batch { files, summary_dir } => {
+                    run_batch(&mut bt, files, summary_dir, &cli, model_loading_secs)?;
+                }
             }
 
             // End ORT profiling
@@ -489,10 +566,11 @@ fn main() -> anyhow::Result<()> {
                 eprintln!("[timing] Model loading: {:.3}s", model_loading_secs);
             }
 
-            if is_batch {
-                run_batch(&mut bt, &cli.input, &cli, model_loading_secs)?;
-            } else {
-                run_pipeline(&mut bt, &cli)?;
+            match &input_mode {
+                InputMode::SingleFile(path) => run_pipeline(&mut bt, &cli, path)?,
+                InputMode::Batch { files, summary_dir } => {
+                    run_batch(&mut bt, files, summary_dir, &cli, model_loading_secs)?;
+                }
             }
         }
     }

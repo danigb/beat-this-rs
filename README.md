@@ -134,17 +134,31 @@ beat-this input.wav --json=results.json --click=clicks.wav
 beat-this input.wav --model models/beat_this_small.onnx
 ```
 
-**Batch processing a directory**:
+**Batch processing a directory** (per-file JSON by default):
 
 ```bash
-beat-this ./music-folder/ -r --json --beats
+beat-this ./music-folder/
+# → writes <file>.json for each audio file + beat_this.json summary
+```
+
+**Batch with multiple output formats**:
+
+```bash
+beat-this ./music-folder/ -r --json --beats --mix
+# → writes <file>.json, <file>.beats, <file>.mix.wav per file + beat_this.json
+```
+
+**Batch with glob patterns** (quote to prevent shell expansion):
+
+```bash
+beat-this "music/**/*.mp3" --json --beats
 ```
 
 ### CLI Options
 
 | Option                  | Description                                             |
 | ----------------------- | ------------------------------------------------------- |
-| `<input>`               | Audio file or directory                                 |
+| `<input>`               | Audio file, directory, or glob pattern                  |
 | `--json [FILE]`         | Write JSON output (default ext: `.json`)                |
 | `--beats [FILE]`        | Write beats text file (default ext: `.beats`)           |
 | `--click [FILE]`        | Write click-track WAV (default ext: `.click.wav`)       |
