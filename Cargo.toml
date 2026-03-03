@@ -2,6 +2,12 @@
 name = "beat-this"
 version = "0.1.0"
 edition = "2021"
+description = "Rust port of Beat This! — AI-powered beat and downbeat tracking"
+license = "MIT"
+repository = "https://github.com/danigb/beat-this-rs"
+readme = "README.md"
+keywords = ["beat-tracking", "music", "audio", "mir", "onnx"]
+categories = ["multimedia::audio", "science"]
 
 [[bin]]
 name = "beat-this"
@@ -12,7 +18,11 @@ name = "beat_this"
 path = "src/lib.rs"
 
 [dependencies]
-ort = { version = "=2.0.0-rc.10", features = ["ndarray", "load-dynamic", "coreml"] }
+ort = { version = "=2.0.0-rc.10", features = [
+    "ndarray",
+    "load-dynamic",
+    "coreml",
+] }
 ndarray = "0.16"
 rten = { version = "0.24", features = ["fft"] }
 rten-tensor = { version = "0.24" }
@@ -26,3 +36,7 @@ serde_json = "1"
 
 [dev-dependencies]
 tempfile = "3"
+
+[profile.release]
+lto = true
+strip = true

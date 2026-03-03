@@ -38,14 +38,18 @@ impl Default for OrtRuntime {
 impl OrtRuntime {
     /// Check if CoreML is available in the loaded ORT runtime.
     pub fn is_coreml_available(&self) -> bool {
-        CoreMLExecutionProvider::default().is_available().unwrap_or(false)
+        CoreMLExecutionProvider::default()
+            .is_available()
+            .unwrap_or(false)
     }
 }
 
 impl InferenceRuntime for OrtRuntime {
     type Session = OrtSession;
 
+    #[allow(clippy::needless_match)]
     fn load_model(&self, path: &Path) -> Result<OrtSession> {
+        // Match is needed because GraphOptimizationLevel doesn't implement Copy or Clone.
         let optimization_level = match self.optimization_level {
             GraphOptimizationLevel::Disable => GraphOptimizationLevel::Disable,
             GraphOptimizationLevel::Level1 => GraphOptimizationLevel::Level1,
@@ -55,9 +59,7 @@ impl InferenceRuntime for OrtRuntime {
         let mut builder = Session::builder()?
             .with_optimization_level(optimization_level)?
             .with_intra_threads(self.intra_threads)?
-            .with_execution_providers([
-                CoreMLExecutionProvider::default().build(),
-            ])?;
+            .with_execution_providers([CoreMLExecutionProvider::default().build()])?;
         if let Some(ref profile_path) = self.profiling_path {
             builder = builder.with_profiling(profile_path)?;
         }

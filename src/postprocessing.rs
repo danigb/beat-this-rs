@@ -48,10 +48,7 @@ impl PostProcessor {
         let beat_frames = find_peaks(beat_logits);
         let downbeat_frames = find_peaks(downbeat_logits);
 
-        let beats: Vec<f32> = beat_frames
-            .iter()
-            .map(|&f| f as f32 / self.fps)
-            .collect();
+        let beats: Vec<f32> = beat_frames.iter().map(|&f| f as f32 / self.fps).collect();
         let mut downbeats: Vec<f32> = downbeat_frames
             .iter()
             .map(|&f| f as f32 / self.fps)
@@ -153,7 +150,7 @@ fn snap_downbeats_to_beats(beat_times: &[f32], downbeat_times: &mut Vec<f32>) {
     }
 
     // Sort and deduplicate after snapping (multiple downbeats may map to the same beat).
-    downbeat_times.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    downbeat_times.sort_by(|a, b| a.total_cmp(b));
     downbeat_times.dedup();
 }
 

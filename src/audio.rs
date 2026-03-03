@@ -85,8 +85,7 @@ fn decode(path: &Path) -> Result<(Vec<f32>, u32, usize)> {
                 source_sr = spec.rate;
                 channels = spec.channels.count();
 
-                let mut sample_buf =
-                    SampleBuffer::<f32>::new(decoded.capacity() as u64, spec);
+                let mut sample_buf = SampleBuffer::<f32>::new(decoded.capacity() as u64, spec);
                 sample_buf.copy_interleaved_ref(decoded);
                 samples.extend_from_slice(sample_buf.samples());
             }

@@ -29,7 +29,11 @@ fn load_mel_session() -> Option<impl beat_this::InferenceSession> {
         return None;
     }
     let runtime = OrtRuntime::default();
-    Some(runtime.load_model(model_path).expect("Failed to load mel model"))
+    Some(
+        runtime
+            .load_model(model_path)
+            .expect("Failed to load mel model"),
+    )
 }
 
 #[test]

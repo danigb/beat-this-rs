@@ -24,7 +24,10 @@ fn test_load_mp3() {
     let audio = load_audio(Path::new(TEST_MP3), TARGET_SR).unwrap();
 
     assert_eq!(audio.sample_rate, TARGET_SR);
-    assert!(!audio.samples.is_empty(), "decoded samples should not be empty");
+    assert!(
+        !audio.samples.is_empty(),
+        "decoded samples should not be empty"
+    );
 
     // All samples should be finite (no NaN or Inf)
     assert!(
@@ -33,11 +36,7 @@ fn test_load_mp3() {
     );
 
     // Samples should not all be zero (source file has content)
-    let max_abs = audio
-        .samples
-        .iter()
-        .map(|s| s.abs())
-        .fold(0.0f32, f32::max);
+    let max_abs = audio.samples.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
     assert!(max_abs > 0.001, "samples should contain audible content");
 }
 

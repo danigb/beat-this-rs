@@ -4,7 +4,7 @@
 
 ### 1. Add LICENSE file
 
-Create `LICENSE` with MIT text (Copyright 2025 Daniel Garcia Brizuela).
+Create `LICENSE` with MIT text (Copyright 2025 danigb).
 
 ### 2. Complete Cargo.toml metadata
 

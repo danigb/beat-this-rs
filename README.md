@@ -1,5 +1,8 @@
 # [Beat This! Rust](https://github.com/danigb/beat-this-rs)
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![CI](https://github.com/danigb/beat-this-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/danigb/beat-this-rs/actions/workflows/ci.yml)
+
 A Rust port of the "Beat This!" AI-powered beat tracking system from Johannes Kepler University Linz.
 
 The port was made with [Claude](https://claude.ai/)
@@ -14,7 +17,7 @@ This is a Rust implementation of the Beat This! model, originally published at I
 
 ## Features
 
-- **Two Runtime Backends**: Choose between `rten` (pure Rust, zero external dependencies) or `ort` (ONNX Runtime with CoreML acceleration on macOS)
+- **Two Runtime Backends**: Choose between `rten` (pure Rust, zero external dependencies) or `ort` (ONNX Runtime)
 - **Multiple Output Formats**: JSON, plain text `.beats` files, click track WAV, or mixed audio
 - **Batch Processing**: Process entire directories of audio files with summary statistics
 - **BPM Estimation**: Automatic tempo detection from beat timestamps
@@ -39,30 +42,18 @@ The system consists of four main components:
 - **hound**: WAV file writing
 - **ndarray**: N-dimensional array operations
 
-## Building
+## Installation
 
-### Prerequisites
-
-- Rust toolchain (1.70+)
-- ONNX model files in the `models/` directory (see [Model Setup](#model-setup))
-
-### Development Build
+### From Source
 
 ```bash
 git clone git@github.com:danigb/beat-this-rs.git
 cd beat-this-rs
-cargo build
-```
-
-### Production Build
-
-For optimized performance, build in release mode:
-
-```bash
+./scripts/download-models.sh    # Download beat tracking model
 cargo build --release
 ```
 
-The release binary will be at `target/release/beat-this`. Release mode enables compiler optimizations (LTO, native CPU features) that significantly improve inference speed.
+The release binary will be at `target/release/beat-this`. Release mode enables LTO and stripping for optimized performance.
 
 ### Using the ORT Runtime
 

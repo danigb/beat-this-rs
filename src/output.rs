@@ -43,9 +43,7 @@ pub fn beat_counts(result: &BeatResult) -> Vec<i32> {
 
 /// Check if a beat time corresponds to a downbeat (within tolerance).
 fn is_downbeat(beat_time: f32, downbeats: &[f32]) -> bool {
-    downbeats
-        .iter()
-        .any(|&db| (beat_time - db).abs() < 0.001)
+    downbeats.iter().any(|&db| (beat_time - db).abs() < 0.001)
 }
 
 /// Write a `.beats` file: tab-separated `time\tbeat_count` per line.
@@ -149,9 +147,9 @@ pub fn calculate_bpm(result: &BeatResult) -> Option<f32> {
         return None;
     }
 
-    intervals.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    intervals.sort_by(|a, b| a.total_cmp(b));
     let n = intervals.len();
-    let median = if n % 2 == 0 {
+    let median = if n.is_multiple_of(2) {
         (intervals[n / 2 - 1] + intervals[n / 2]) / 2.0
     } else {
         intervals[n / 2]
@@ -339,10 +337,7 @@ mod tests {
 
     #[test]
     fn test_beat_counts_multiple_downbeats() {
-        let result = make_result(
-            vec![0.5, 1.0, 1.5, 2.0, 2.5, 3.0],
-            vec![0.5, 2.0],
-        );
+        let result = make_result(vec![0.5, 1.0, 1.5, 2.0, 2.5, 3.0], vec![0.5, 2.0]);
         let counts = beat_counts(&result);
         assert_eq!(counts, vec![1, 2, 3, 1, 2, 3]);
     }
@@ -399,10 +394,7 @@ mod tests {
         assert_eq!(spec.bits_per_sample, 32);
 
         // Verify non-zero samples exist
-        let samples: Vec<f32> = reader
-            .into_samples::<f32>()
-            .map(|s| s.unwrap())
-            .collect();
+        let samples: Vec<f32> = reader.into_samples::<f32>().map(|s| s.unwrap()).collect();
         assert!(samples.iter().any(|&s| s.abs() > 0.01));
     }
 
@@ -421,10 +413,7 @@ mod tests {
         assert_eq!(spec.channels, 1);
         assert_eq!(spec.sample_rate, 44100);
 
-        let samples: Vec<f32> = reader
-            .into_samples::<f32>()
-            .map(|s| s.unwrap())
-            .collect();
+        let samples: Vec<f32> = reader.into_samples::<f32>().map(|s| s.unwrap()).collect();
         // Should have at least as many samples as original
         assert!(samples.len() >= 44100 * 2);
         // Clicks should be audible (non-zero)
@@ -434,10 +423,7 @@ mod tests {
     #[test]
     fn test_calculate_bpm_120() {
         // Beats at 0.5s intervals = 120 BPM
-        let result = make_result(
-            vec![0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0],
-            vec![0.0],
-        );
+        let result = make_result(vec![0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0], vec![0.0]);
         let bpm = calculate_bpm(&result).unwrap();
         assert!((bpm - 120.0).abs() < 0.1, "Expected ~120 BPM, got {}", bpm);
     }
@@ -456,10 +442,7 @@ mod tests {
 
     #[test]
     fn test_build_json_output() {
-        let result = make_result(
-            vec![0.5, 1.0, 1.5, 2.0, 2.5, 3.0],
-            vec![0.5, 2.0],
-        );
+        let result = make_result(vec![0.5, 1.0, 1.5, 2.0, 2.5, 3.0], vec![0.5, 2.0]);
         let json_out = build_json_output(&result);
 
         assert_eq!(json_out.beats.len(), 6);
@@ -551,6 +534,10 @@ mod tests {
         assert!(click.last().unwrap().abs() < 0.05);
         // Has significant amplitude in the middle
         let peak = click.iter().fold(0.0f32, |m, &s| m.max(s.abs()));
-        assert!(peak > 0.9, "Peak amplitude should be near 1.0, got {}", peak);
+        assert!(
+            peak > 0.9,
+            "Peak amplitude should be near 1.0, got {}",
+            peak
+        );
     }
 }

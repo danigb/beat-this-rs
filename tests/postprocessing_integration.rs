@@ -43,12 +43,16 @@ fn test_postprocessing_with_real_inference() {
     let audio = beat_this::load_audio(audio_path, 22050).expect("Failed to load audio");
     let duration = audio.samples.len() as f32 / 22050.0;
 
-    let mel_session = runtime.load_model(mel_path).expect("Failed to load mel model");
+    let mel_session = runtime
+        .load_model(mel_path)
+        .expect("Failed to load mel model");
     let mut mel_proc = MelProcessor::new(mel_session);
     let mel = mel_proc.process(&audio.samples).expect("Mel failed");
     let mel_frames = mel::num_frames(&mel);
 
-    let beat_session = runtime.load_model(beat_path).expect("Failed to load beat model");
+    let beat_session = runtime
+        .load_model(beat_path)
+        .expect("Failed to load beat model");
     let mut beat_proc = BeatInference::new(beat_session);
     let (beat_logits, downbeat_logits) = beat_proc.process(&mel).expect("Inference failed");
 
@@ -56,13 +60,12 @@ fn test_postprocessing_with_real_inference() {
 
     // Post-process.
     let pp = PostProcessor::default();
-    let result = pp.process(&beat_logits, &downbeat_logits).expect("Post-processing failed");
+    let result = pp
+        .process(&beat_logits, &downbeat_logits)
+        .expect("Post-processing failed");
 
     // Beats and downbeats should be non-empty for real music.
-    assert!(
-        !result.beats.is_empty(),
-        "No beats detected in real music"
-    );
+    assert!(!result.beats.is_empty(), "No beats detected in real music");
     assert!(
         !result.downbeats.is_empty(),
         "No downbeats detected in real music"
@@ -71,11 +74,17 @@ fn test_postprocessing_with_real_inference() {
     // All times should be non-negative and within audio duration.
     for &t in &result.beats {
         assert!(t >= 0.0, "Negative beat time: {t}");
-        assert!(t <= duration + 0.1, "Beat time {t} exceeds duration {duration}");
+        assert!(
+            t <= duration + 0.1,
+            "Beat time {t} exceeds duration {duration}"
+        );
     }
     for &t in &result.downbeats {
         assert!(t >= 0.0, "Negative downbeat time: {t}");
-        assert!(t <= duration + 0.1, "Downbeat time {t} exceeds duration {duration}");
+        assert!(
+            t <= duration + 0.1,
+            "Downbeat time {t} exceeds duration {duration}"
+        );
     }
 
     // Times should be sorted.

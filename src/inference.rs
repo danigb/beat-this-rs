@@ -54,9 +54,7 @@ impl<S: InferenceSession> BeatInference<S> {
         for &start in starts.iter().rev() {
             let chunk = extract_chunk(mel, start);
 
-            let mut outputs = self
-                .session
-                .run(&[("spectrogram", &chunk)])?;
+            let mut outputs = self.session.run(&[("spectrogram", &chunk)])?;
 
             let beat = extract_output(&mut outputs, "beat", "beat_logits")?;
             let downbeat = extract_output(&mut outputs, "downbeat", "downbeat_logits")?;

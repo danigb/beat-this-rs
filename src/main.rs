@@ -13,7 +13,11 @@ const DEFAULT_MODEL_PATH: &str = "models/beat_this.onnx";
 const DEFAULT_MEL_MODEL_PATH: &str = "models/mel_spectrogram.onnx";
 
 #[derive(Parser)]
-#[command(name = "beat-this", version, about = "Beat and downbeat tracking using Beat This! models")]
+#[command(
+    name = "beat-this",
+    version,
+    about = "Beat and downbeat tracking using Beat This! models"
+)]
 struct Cli {
     /// Path to an audio file or directory of audio files
     input: PathBuf,
@@ -81,7 +85,7 @@ enum Runtime {
 
 /// Resolve beat model path: explicit --model wins, otherwise --model-variant selects the default.
 fn resolve_beat_model_path(cli: &Cli) -> PathBuf {
-    let model_was_explicit = cli.model_path != PathBuf::from(DEFAULT_MODEL_PATH);
+    let model_was_explicit = cli.model_path.as_path() != Path::new(DEFAULT_MODEL_PATH);
     if model_was_explicit {
         cli.model_path.clone()
     } else {
@@ -137,7 +141,11 @@ fn run_batch<S: InferenceSession>(
     model_loading_secs: f32,
 ) -> anyhow::Result<()> {
     let files = find_audio_files(dir, cli.recursive)?;
-    ensure!(!files.is_empty(), "No audio files found in {}", dir.display());
+    ensure!(
+        !files.is_empty(),
+        "No audio files found in {}",
+        dir.display()
+    );
 
     eprintln!("Processing {}... ({} files)", dir.display(), files.len());
 
@@ -259,10 +267,7 @@ fn process_single_file<S: InferenceSession>(
     let t = Instant::now();
     let (beat_logits, downbeat_logits) = bt.inference.process(&mel)?;
     if cli.verbose {
-        eprintln!(
-            "[timing] Beat inference: {:.3}s",
-            t.elapsed().as_secs_f64()
-        );
+        eprintln!("[timing] Beat inference: {:.3}s", t.elapsed().as_secs_f64());
     }
 
     let t = Instant::now();
@@ -283,7 +288,10 @@ fn process_single_file<S: InferenceSession>(
 /// Run the full single-file pipeline (audio → mel → inference → postprocessing → output).
 ///
 /// Generic over the inference session — works with any backend.
-fn run_pipeline<S: InferenceSession>(bt: &mut beat_this::BeatThis<S>, cli: &Cli) -> anyhow::Result<()> {
+fn run_pipeline<S: InferenceSession>(
+    bt: &mut beat_this::BeatThis<S>,
+    cli: &Cli,
+) -> anyhow::Result<()> {
     eprintln!("Processing {}...", cli.input.display());
 
     let file_result = process_single_file(bt, &cli.input, cli)?;
@@ -362,7 +370,11 @@ fn main() -> anyhow::Result<()> {
                 ..Default::default()
             };
             if cli.verbose {
-                let coreml = if runtime.is_coreml_available() { "yes" } else { "no" };
+                let coreml = if runtime.is_coreml_available() {
+                    "yes"
+                } else {
+                    "no"
+                };
                 eprintln!("[info] Runtime: ort");
                 eprintln!("[info] CoreML available: {}", coreml);
                 eprintln!("[info] Intra-op threads: {}", cli.threads);
@@ -384,7 +396,8 @@ fn main() -> anyhow::Result<()> {
                 .context("Failed to initialize ort runtime. Is the ONNX Runtime library installed?\n  \
                     macOS: brew install onnxruntime\n  \
                     Or use --runtime rten (default) for a pure-Rust runtime with no external dependencies.")?;
-            let beat_session = beat_runtime.load_model(&beat_path)
+            let beat_session = beat_runtime
+                .load_model(&beat_path)
                 .context("Failed to load beat model with ort runtime.")?;
             let mut bt = beat_this::BeatThis {
                 mel: beat_this::MelProcessor::new(mel_session),
@@ -415,7 +428,9 @@ fn main() -> anyhow::Result<()> {
                 eprintln!("[info] Runtime: rten (pure Rust)");
             }
             if cli.profile.is_some() {
-                eprintln!("[warn] Profiling is only supported with the ort runtime, ignoring --profile");
+                eprintln!(
+                    "[warn] Profiling is only supported with the ort runtime, ignoring --profile"
+                );
             }
             let runtime = beat_this::runtime::rten::RtenRuntime;
             let mut bt = beat_this::BeatThis::new(&runtime, &mel_path, &beat_path)?;
@@ -433,7 +448,10 @@ fn main() -> anyhow::Result<()> {
     }
 
     if cli.verbose {
-        eprintln!("[timing] Total: {:.3}s", total_start.elapsed().as_secs_f64());
+        eprintln!(
+            "[timing] Total: {:.3}s",
+            total_start.elapsed().as_secs_f64()
+        );
     }
 
     Ok(())

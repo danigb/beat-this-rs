@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::{anyhow, Result};
-use rten::{Model, NodeId};
 use rten::Value as RtenValue;
+use rten::{Model, NodeId};
 use rten_tensor::{AsView, Layout};
 
 use super::{InferenceRuntime, InferenceSession, Tensor};
@@ -74,7 +74,9 @@ impl InferenceSession for RtenSession {
                     .get(*name)
                     .ok_or_else(|| anyhow!("rten: unknown input name '{}'", name))?;
                 let value = RtenValue::from_shape(tensor.shape.as_slice(), tensor.data.clone())
-                    .map_err(|e| anyhow!("rten: failed to create input tensor '{}': {}", name, e))?;
+                    .map_err(|e| {
+                        anyhow!("rten: failed to create input tensor '{}': {}", name, e)
+                    })?;
                 Ok((*node_id, value))
             })
             .collect::<Result<Vec<_>>>()?;

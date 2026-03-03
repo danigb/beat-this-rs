@@ -106,7 +106,8 @@ fn test_process_audio() {
     .expect("Failed to create BeatThis");
 
     // Load audio manually, then pass to process_audio.
-    let audio = beat_this::load_audio(Path::new(TEST_AUDIO_PATH), 22050).expect("Failed to load audio");
+    let audio =
+        beat_this::load_audio(Path::new(TEST_AUDIO_PATH), 22050).expect("Failed to load audio");
     let result = bt
         .process_audio(&audio.samples, audio.sample_rate)
         .expect("process_audio failed");
@@ -152,7 +153,8 @@ fn test_process_audio_different_sample_rate() {
     .expect("Failed to create BeatThis");
 
     // Load audio at 44100 Hz (different from model's 22050 Hz).
-    let audio = beat_this::load_audio(Path::new(TEST_AUDIO_PATH), 44100).expect("Failed to load audio");
+    let audio =
+        beat_this::load_audio(Path::new(TEST_AUDIO_PATH), 44100).expect("Failed to load audio");
     assert_eq!(audio.sample_rate, 44100);
 
     let result = bt

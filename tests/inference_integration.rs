@@ -31,7 +31,11 @@ fn load_beat_session() -> Option<impl beat_this::InferenceSession> {
         return None;
     }
     let runtime = OrtRuntime::default();
-    Some(runtime.load_model(model_path).expect("Failed to load beat model"))
+    Some(
+        runtime
+            .load_model(model_path)
+            .expect("Failed to load beat model"),
+    )
 }
 
 fn load_mel_session() -> Option<impl beat_this::InferenceSession> {
@@ -45,7 +49,11 @@ fn load_mel_session() -> Option<impl beat_this::InferenceSession> {
         return None;
     }
     let runtime = OrtRuntime::default();
-    Some(runtime.load_model(model_path).expect("Failed to load mel model"))
+    Some(
+        runtime
+            .load_model(model_path)
+            .expect("Failed to load mel model"),
+    )
 }
 
 #[test]
@@ -67,7 +75,11 @@ fn test_beat_inference_short() {
 
     let (beat_logits, downbeat_logits) = processor.process(&mel).expect("Inference failed");
 
-    assert_eq!(beat_logits.len(), time_frames, "Beat logits length mismatch");
+    assert_eq!(
+        beat_logits.len(),
+        time_frames,
+        "Beat logits length mismatch"
+    );
     assert_eq!(
         downbeat_logits.len(),
         time_frames,
@@ -136,7 +148,10 @@ fn test_beat_inference_long() {
     eprintln!(
         "Long inference: {time_frames} frames → beat range [{:.2}, {:.2}]",
         beat_logits.iter().cloned().fold(f32::INFINITY, f32::min),
-        beat_logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max),
+        beat_logits
+            .iter()
+            .cloned()
+            .fold(f32::NEG_INFINITY, f32::max),
     );
 }
 
@@ -160,7 +175,9 @@ fn test_beat_inference_with_real_audio() {
     // Load audio → mel spectrogram → beat inference.
     let audio = beat_this::load_audio(audio_path, 22050).expect("Failed to load audio");
     let mut mel_proc = MelProcessor::new(mel_session);
-    let mel = mel_proc.process(&audio.samples).expect("Mel processing failed");
+    let mel = mel_proc
+        .process(&audio.samples)
+        .expect("Mel processing failed");
     let mel_frames = mel::num_frames(&mel);
 
     let mut beat_proc = BeatInference::new(beat_session);

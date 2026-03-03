@@ -75,10 +75,7 @@ fn test_full_pipeline_to_beats_file() {
         assert_eq!(counts[idx], 1, "Downbeat should have count 1");
     }
 
-    eprintln!(
-        "Wrote {} beats to .beats file",
-        lines.len()
-    );
+    eprintln!("Wrote {} beats to .beats file", lines.len());
 }
 
 #[test]
