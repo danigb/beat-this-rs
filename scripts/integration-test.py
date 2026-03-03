@@ -116,7 +116,8 @@ def run_rust(audio_path: Path, output_path: Path, runtime: str):
         str(RUST_BINARY),
         str(audio_path),
         "--runtime", runtime,
-        "--output-beats",
+        f"--beats={output_path}",
+        "--overwrite",
     ]
     env = dict(subprocess.os.environ)
     if runtime == "ort" and ORT_LIB_DIR:
@@ -129,7 +130,6 @@ def run_rust(audio_path: Path, output_path: Path, runtime: str):
         print(f"    Rust ({runtime}) FAILED: {result.stderr.strip()}")
         return None
 
-    output_path.write_text(result.stdout)
     return elapsed
 
 

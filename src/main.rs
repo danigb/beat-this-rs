@@ -30,33 +30,33 @@ struct Cli {
     #[arg(long = "mel-model", default_value = DEFAULT_MEL_MODEL_PATH)]
     mel_model_path: PathBuf,
 
-    /// Model variant to use (standard or small)
-    #[arg(long = "model-variant", value_enum, default_value_t = ModelVariant::Standard)]
-    model_variant: ModelVariant,
-
     /// Inference runtime to use
     #[arg(long = "runtime", value_enum, default_value = "rten")]
     runtime: Runtime,
 
-    /// Print beats as plain text (tab-separated time and count) instead of JSON
-    #[arg(long = "output-beats")]
-    output_beats: bool,
+    /// Write JSON output [=FILE]
+    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "")]
+    json: Option<String>,
+
+    /// Write beats text file [=FILE]
+    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "")]
+    beats: Option<String>,
+
+    /// Write click-track WAV [=FILE]
+    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "")]
+    click: Option<String>,
+
+    /// Write mixed audio WAV [=FILE]
+    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "")]
+    mix: Option<String>,
+
+    /// Overwrite existing output files
+    #[arg(long)]
+    overwrite: bool,
 
     /// Recurse into subdirectories (batch mode only)
     #[arg(short = 'r', long = "recursive")]
     recursive: bool,
-
-    /// Write a click-track WAV file
-    #[arg(long = "output-click")]
-    output_click: Option<PathBuf>,
-
-    /// Write a mixed audio WAV file (original + clicks)
-    #[arg(long = "output-mixed")]
-    output_mixed: Option<PathBuf>,
-
-    /// Print estimated BPM to stdout
-    #[arg(long = "bpm")]
-    show_bpm: bool,
 
     /// Print timing for each processing stage
     #[arg(short = 'v', long = "verbose")]
@@ -65,16 +65,6 @@ struct Cli {
     /// Enable ORT profiling and write trace JSON to this prefix
     #[arg(long = "profile")]
     profile: Option<String>,
-
-    /// Number of intra-op threads for ORT (0 = auto)
-    #[arg(long = "threads", default_value_t = 0)]
-    threads: usize,
-}
-
-#[derive(Clone, clap::ValueEnum)]
-enum ModelVariant {
-    Standard,
-    Small,
 }
 
 #[derive(Clone, clap::ValueEnum)]
@@ -83,24 +73,41 @@ enum Runtime {
     Rten,
 }
 
-/// Resolve beat model path: explicit --model wins, otherwise --model-variant selects the default.
-fn resolve_beat_model_path(cli: &Cli) -> PathBuf {
-    let model_was_explicit = cli.model_path.as_path() != Path::new(DEFAULT_MODEL_PATH);
-    if model_was_explicit {
-        cli.model_path.clone()
+/// Returns true if any output flag (--json, --beats, --click, --mix) is set.
+fn has_output_flags(cli: &Cli) -> bool {
+    cli.json.is_some() || cli.beats.is_some() || cli.click.is_some() || cli.mix.is_some()
+}
+
+/// Resolve an output file path from a flag value and input file path.
+///
+/// - Flag not set (`None`) → `None`
+/// - Flag set without value (`Some("")`) → derive from input path with given extension
+/// - Flag set with value (`Some("file.json")`) → use as-is
+fn resolve_output_path(input: &Path, flag: &Option<String>, ext: &str) -> Option<PathBuf> {
+    let value = flag.as_ref()?;
+    if value.is_empty() {
+        Some(input.with_extension(ext))
     } else {
-        match cli.model_variant {
-            ModelVariant::Standard => PathBuf::from("models/beat_this.onnx"),
-            ModelVariant::Small => PathBuf::from("models/beat_this_small.onnx"),
-        }
+        Some(PathBuf::from(value))
     }
 }
 
-fn print_beats_stdout(result: &BeatResult) {
-    let counts = output::beat_counts(result);
-    for (&time, &count) in result.beats.iter().zip(counts.iter()) {
-        println!("{:.3}\t{}", time, count);
+/// Write a file if it doesn't already exist (or --overwrite is set).
+/// Returns `true` if the file was written, `false` if skipped.
+fn write_if_needed(
+    path: &Path,
+    overwrite: bool,
+    write_fn: impl FnOnce(&Path) -> anyhow::Result<()>,
+) -> anyhow::Result<bool> {
+    if path.exists() && !overwrite {
+        eprintln!(
+            "Skipped {} (already exists, use --overwrite)",
+            path.display()
+        );
+        return Ok(false);
     }
+    write_fn(path)?;
+    Ok(true)
 }
 
 const AUDIO_EXTENSIONS: &[&str] = &["wav", "mp3", "flac", "ogg"];
@@ -174,19 +181,34 @@ fn run_batch<S: InferenceSession>(
 
         let json_out = output::build_json_output(&result.beat_result);
 
-        eprintln!(
-            "  [{}/{}] {} — {} beats, {:.1} BPM ({:.2}s)",
-            i + 1,
-            files.len(),
-            filename,
-            result.beat_result.beats.len(),
-            json_out.bpm.unwrap_or(0.0),
-            elapsed
-        );
+        // Write per-file outputs if any output flags are set
+        let written = if has_output_flags(cli) {
+            write_outputs(path, &result.beat_result, cli)?
+        } else {
+            Vec::new()
+        };
 
-        if cli.output_beats {
-            let beats_path = path.with_extension("beats");
-            output::write_beats_file(&beats_path, &result.beat_result)?;
+        if written.is_empty() {
+            eprintln!(
+                "  [{}/{}] {} — {} beats, {:.1} BPM ({:.2}s)",
+                i + 1,
+                files.len(),
+                filename,
+                result.beat_result.beats.len(),
+                json_out.bpm.unwrap_or(0.0),
+                elapsed
+            );
+        } else {
+            eprintln!(
+                "  [{}/{}] {} — {} beats, {:.1} BPM ({:.2}s) → {}",
+                i + 1,
+                files.len(),
+                filename,
+                result.beat_result.beats.len(),
+                json_out.bpm.unwrap_or(0.0),
+                elapsed,
+                written.join(", ")
+            );
         }
 
         file_outputs.push(output::BatchFileOutput {
@@ -206,26 +228,35 @@ fn run_batch<S: InferenceSession>(
         0.0
     };
 
-    let batch = output::BatchOutput {
-        files: file_outputs,
-        summary: output::BatchSummary {
-            total_files: files.len(),
-            failed_files: failed,
-            total_duration_secs: total_duration as f32,
-            total_processing_time_secs: total_processing as f32,
-            model_loading_time_secs: model_loading_secs,
-            realtime_factor: realtime_factor as f32,
-        },
-    };
+    // Only write batch summary JSON when no per-file output flags are set
+    if !has_output_flags(cli) {
+        let batch = output::BatchOutput {
+            files: file_outputs,
+            summary: output::BatchSummary {
+                total_files: files.len(),
+                failed_files: failed,
+                total_duration_secs: total_duration as f32,
+                total_processing_time_secs: total_processing as f32,
+                model_loading_time_secs: model_loading_secs,
+                realtime_factor: realtime_factor as f32,
+            },
+        };
 
-    let out_path = dir.join("beat-this.json");
-    output::write_batch_json(&out_path, &batch)?;
-    eprintln!(
-        "Wrote {} ({} files, {:.1}s total)",
-        out_path.display(),
-        files.len(),
-        total_processing
-    );
+        let out_path = dir.join("beat-this.json");
+        output::write_batch_json(&out_path, &batch)?;
+        eprintln!(
+            "Wrote {} ({} files, {:.1}s total)",
+            out_path.display(),
+            files.len(),
+            total_processing
+        );
+    } else {
+        eprintln!(
+            "Processed {} files ({:.1}s total)",
+            files.len(),
+            total_processing
+        );
+    }
 
     Ok(())
 }
@@ -285,6 +316,46 @@ fn process_single_file<S: InferenceSession>(
     })
 }
 
+/// Write all requested outputs for a single file, returning list of written file names.
+fn write_outputs(input: &Path, result: &BeatResult, cli: &Cli) -> anyhow::Result<Vec<String>> {
+    let mut written = Vec::new();
+
+    if let Some(path) = resolve_output_path(input, &cli.json, "json") {
+        if write_if_needed(&path, cli.overwrite, |p| output::write_json_file(p, result))? {
+            written.push(path.display().to_string());
+        }
+    }
+
+    if let Some(path) = resolve_output_path(input, &cli.beats, "beats") {
+        if write_if_needed(&path, cli.overwrite, |p| {
+            output::write_beats_file(p, result)
+        })? {
+            written.push(path.display().to_string());
+        }
+    }
+
+    if let Some(path) = resolve_output_path(input, &cli.click, "click.wav") {
+        if write_if_needed(&path, cli.overwrite, |p| {
+            output::write_click_track(p, result)
+        })? {
+            written.push(path.display().to_string());
+        }
+    }
+
+    if let Some(path) = resolve_output_path(input, &cli.mix, "mix.wav") {
+        let write_mix = |p: &Path| -> anyhow::Result<()> {
+            let audio = beat_this::load_audio(input, 44100)?;
+            output::write_mixed_audio(p, result, &audio.samples, audio.sample_rate)?;
+            Ok(())
+        };
+        if write_if_needed(&path, cli.overwrite, write_mix)? {
+            written.push(path.display().to_string());
+        }
+    }
+
+    Ok(written)
+}
+
 /// Run the full single-file pipeline (audio → mel → inference → postprocessing → output).
 ///
 /// Generic over the inference session — works with any backend.
@@ -297,34 +368,21 @@ fn run_pipeline<S: InferenceSession>(
     let file_result = process_single_file(bt, &cli.input, cli)?;
     let result = &file_result.beat_result;
 
+    let json_out = output::build_json_output(result);
     eprintln!(
-        "Found {} beats ({} downbeats)",
+        "Found {} beats ({} downbeats, {:.1} BPM)",
         result.beats.len(),
-        result.downbeats.len()
+        result.downbeats.len(),
+        json_out.bpm.unwrap_or(0.0),
     );
 
-    // stdout output: --output-beats prints plain text, otherwise JSON (default)
-    if cli.output_beats {
-        print_beats_stdout(result);
-    } else {
+    if !has_output_flags(cli) {
+        // Default: JSON to stdout
         output::print_json_stdout(result)?;
-    }
-
-    if let Some(ref path) = cli.output_click {
-        output::write_click_track(path, result)?;
-        eprintln!("Wrote click track to {}", path.display());
-    }
-
-    if let Some(ref path) = cli.output_mixed {
-        let audio = beat_this::load_audio(&cli.input, 44100)?;
-        output::write_mixed_audio(path, result, &audio.samples, audio.sample_rate)?;
-        eprintln!("Wrote mixed audio to {}", path.display());
-    }
-
-    if cli.show_bpm {
-        match output::calculate_bpm(result) {
-            Some(bpm) => println!("{:.1} BPM", bpm),
-            None => eprintln!("Could not calculate BPM (too few beats)"),
+    } else {
+        let written = write_outputs(&cli.input, result, cli)?;
+        if !written.is_empty() {
+            eprintln!("Wrote {}", written.join(", "));
         }
     }
 
@@ -345,7 +403,7 @@ fn main() -> anyhow::Result<()> {
 
     // Resolve model paths and validate
     let mel_path = cli.mel_model_path.clone();
-    let beat_path = resolve_beat_model_path(&cli);
+    let beat_path = cli.model_path.clone();
 
     ensure!(
         mel_path.exists(),
@@ -365,10 +423,7 @@ fn main() -> anyhow::Result<()> {
 
     match cli.runtime {
         Runtime::Ort => {
-            let runtime = beat_this::runtime::ort::OrtRuntime {
-                intra_threads: cli.threads,
-                ..Default::default()
-            };
+            let runtime = beat_this::runtime::ort::OrtRuntime::default();
             if cli.verbose {
                 let coreml = if runtime.is_coreml_available() {
                     "yes"
@@ -377,20 +432,15 @@ fn main() -> anyhow::Result<()> {
                 };
                 eprintln!("[info] Runtime: ort");
                 eprintln!("[info] CoreML available: {}", coreml);
-                eprintln!("[info] Intra-op threads: {}", cli.threads);
             }
             // Use a separate runtime for the beat model when profiling
             let beat_runtime = if let Some(ref prefix) = cli.profile {
                 beat_this::runtime::ort::OrtRuntime {
-                    intra_threads: cli.threads,
                     profiling_path: Some(std::path::PathBuf::from(prefix)),
                     ..Default::default()
                 }
             } else {
-                beat_this::runtime::ort::OrtRuntime {
-                    intra_threads: cli.threads,
-                    ..Default::default()
-                }
+                beat_this::runtime::ort::OrtRuntime::default()
             };
             let mel_session = runtime.load_model(&mel_path)
                 .context("Failed to initialize ort runtime. Is the ONNX Runtime library installed?\n  \

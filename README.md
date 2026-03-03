@@ -9,9 +9,11 @@ The port was made with [Claude](https://claude.ai/)
 
 ## Overview
 
-This is a Rust implementation of the Beat This! model, originally published at ISMIR 2024. The system uses a transformer-based neural network to detect musical beats and downbeats in audio files with high accuracy.
+This is a Rust port of the Beat This! inteference mechanism, originally published at ISMIR 2024. The goal is to generate beat information from any audio without any external dependency (except the model weights themselves)
 
-- **Original Paper**: "Beat This! Accurate and Generalizable Beat Tracking"
+The original system uses a transformer-based neural network to detect musical beats and downbeats in audio files with high accuracy.
+
+- **Original Paper**: ["Beat This! Accurate and Generalizable Beat Tracking"](https://arxiv.org/pdf/2407.21658)
 - **Original Repository**: https://github.com/CPJKU/beat_this
 - **C++ Port**: https://github.com/mosynthkey/beat_this_cpp
 
@@ -46,7 +48,7 @@ The system consists of four main components:
 
 ### From Source
 
-Requires [uv](https://docs.astral.sh/uv/) (for Python model download scripts).
+Requires [uv](https://docs.astral.sh/uv/) for Python model management scripts. The scripts will download and convert models into onnx format (they are published as [ckpt files](https://cloud.cp.jku.at/index.php/s/7ik4RrBKTS273gp))
 
 ```bash
 git clone git@github.com:danigb/beat-this-rs.git
@@ -59,7 +61,7 @@ The release binary will be at `target/release/beat-this`. Release mode enables L
 
 ### Using the ORT Runtime
 
-The default `rten` runtime requires no external dependencies. If you want to use the `ort` runtime (for CoreML acceleration on Apple Silicon), install ONNX Runtime first:
+The default `rten` runtime requires no external dependencies. If you want to use the `ort` runtime, install ONNX Runtime first:
 
 ```bash
 # macOS
@@ -113,65 +115,47 @@ Visit [original repo](https://github.com/CPJKU/beat_this?tab=readme-ov-file#avai
 beat-this input.wav
 ```
 
-**Plain text beats**:
+**Write JSON and beats files** (auto-named from input):
 
 ```bash
-beat-this input.wav --output-beats
+beat-this input.wav --json --beats
+# → input.json, input.beats
 ```
 
-**Generate a click track WAV**:
+**Write with explicit paths**:
 
 ```bash
-beat-this input.wav --output-click clicks.wav
-```
-
-**Mixed audio (original + click track)**:
-
-```bash
-beat-this input.wav --output-mixed mixed.wav
-```
-
-**Show BPM**:
-
-```bash
-beat-this input.wav --bpm
+beat-this input.wav --json=results.json --click=clicks.wav
 ```
 
 **Use the small model**:
 
 ```bash
-beat-this input.wav --model-variant small
-```
-
-**Use the ORT runtime with verbose timing**:
-
-```bash
-beat-this input.wav --runtime ort -v
+beat-this input.wav --model models/beat_this_small.onnx
 ```
 
 **Batch processing a directory**:
 
 ```bash
-beat-this ./music-folder/ -r
+beat-this ./music-folder/ -r --json --beats
 ```
 
 ### CLI Options
 
-| Option                              | Description                                             |
-| ----------------------------------- | ------------------------------------------------------- |
-| `<input>`                           | Audio file or directory                                 |
-| `--model <PATH>`                    | Beat model path (default: `models/beat_this.onnx`)      |
-| `--mel-model <PATH>`                | Mel model path (default: `models/mel_spectrogram.onnx`) |
-| `--model-variant <standard\|small>` | Model size variant                                      |
-| `--runtime <rten\|ort>`             | Inference backend (default: `rten`)                     |
-| `--output-beats`                    | Print plain text instead of JSON                        |
-| `--output-click <PATH>`             | Write click track WAV                                   |
-| `--output-mixed <PATH>`             | Write mixed audio WAV                                   |
-| `--bpm`                             | Print estimated BPM                                     |
-| `-r, --recursive`                   | Recurse into subdirectories                             |
-| `-v, --verbose`                     | Print timing for each stage                             |
-| `--threads <N>`                     | ORT intra-op threads (0 = auto)                         |
-| `--profile <PREFIX>`                | ORT profiling trace output                              |
+| Option                  | Description                                             |
+| ----------------------- | ------------------------------------------------------- |
+| `<input>`               | Audio file or directory                                 |
+| `--json [FILE]`         | Write JSON output (default ext: `.json`)                |
+| `--beats [FILE]`        | Write beats text file (default ext: `.beats`)           |
+| `--click [FILE]`        | Write click-track WAV (default ext: `.click.wav`)       |
+| `--mix [FILE]`          | Write mixed audio WAV (default ext: `.mix.wav`)         |
+| `--overwrite`           | Overwrite existing output files                         |
+| `--model <PATH>`        | Beat model path (default: `models/beat_this.onnx`)      |
+| `--mel-model <PATH>`    | Mel model path (default: `models/mel_spectrogram.onnx`) |
+| `--runtime <rten\|ort>` | Inference backend (default: `rten`)                     |
+| `-r, --recursive`       | Recurse into subdirectories                             |
+| `-v, --verbose`         | Print timing for each stage                             |
+| `--profile <PREFIX>`    | ORT profiling trace output                              |
 
 ### Rust API
 
@@ -180,9 +164,8 @@ use std::path::Path;
 use beat_this::{BeatThis, runtime::rten::RtenRuntime};
 
 // Initialize with the pure-Rust runtime
-let runtime = RtenRuntime;
 let mut bt = BeatThis::new(
-    &runtime,
+    &RtenRuntime,
     Path::new("models/mel_spectrogram.onnx"),
     Path::new("models/beat_this.onnx"),
 )?;
@@ -208,7 +191,7 @@ for (i, &time) in result.beats.iter().enumerate() {
 }
 ```
 
-### Plain Text Beats (`--output-beats`)
+### Plain Text Beats (`--beats`)
 
 Tab-separated values with beat time and position within measure:
 
@@ -224,7 +207,7 @@ Tab-separated values with beat time and position within measure:
 - **Column 1**: Beat time in seconds
 - **Column 2**: Beat number (1 = downbeat, 2-4 = other beats)
 
-### Click Track (`--output-click`)
+### Click Track (`--click`)
 
 Generated 44100 Hz mono WAV with:
 
@@ -232,7 +215,7 @@ Generated 44100 Hz mono WAV with:
 - **Other beats**: 440 Hz sine wave
 - ADSR envelope shaping
 
-### Mixed Audio (`--output-mixed`)
+### Mixed Audio (`--mix`)
 
 Combines the original audio with the click track:
 

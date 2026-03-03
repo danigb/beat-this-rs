@@ -206,6 +206,15 @@ pub fn print_json_stdout(result: &BeatResult) -> Result<()> {
     Ok(())
 }
 
+/// Write JSON output to a file.
+pub fn write_json_file(path: &Path, result: &BeatResult) -> Result<()> {
+    let output = build_json_output(result);
+    let file = std::fs::File::create(path)?;
+    let writer = BufWriter::new(file);
+    serde_json::to_writer_pretty(writer, &output)?;
+    Ok(())
+}
+
 /// Per-file entry in batch JSON output.
 #[derive(Serialize)]
 pub struct BatchFileOutput {
