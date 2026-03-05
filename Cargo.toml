@@ -1,6 +1,6 @@
 [package]
 name = "beat-this"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Rust port of Beat This! — AI-powered beat and downbeat tracking"
 license = "MIT"
