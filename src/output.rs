@@ -6,7 +6,7 @@ use anyhow::{ensure, Result};
 use hound::{SampleFormat, WavSpec, WavWriter};
 use serde::Serialize;
 
-use crate::postprocessing::BeatResult;
+use crate::BeatAnalysis;
 
 // Click synthesis constants
 const CLICK_SAMPLE_RATE: u32 = 44100;
@@ -22,15 +22,15 @@ const CLICK_GAIN: f32 = 0.3;
 
 /// Compute beat counts from beat and downbeat timestamps.
 ///
-/// Returns a `Vec<i32>` parallel to `result.beats`:
+/// Returns a `Vec<i32>` parallel to `analysis.beats`:
 /// - 1 for downbeats
 /// - 2, 3, 4, ... for subsequent beats within each measure
-pub fn beat_counts(result: &BeatResult) -> Vec<i32> {
-    let mut counts = Vec::with_capacity(result.beats.len());
+pub fn beat_counts(analysis: &BeatAnalysis) -> Vec<i32> {
+    let mut counts = Vec::with_capacity(analysis.beats.len());
     let mut counter = 0i32;
 
-    for &beat_time in &result.beats {
-        if is_downbeat(beat_time, &result.downbeats) {
+    for &beat_time in &analysis.beats {
+        if is_downbeat(beat_time, &analysis.downbeats) {
             counter = 1;
         } else {
             counter += 1;
@@ -50,14 +50,14 @@ fn is_downbeat(beat_time: f32, downbeats: &[f32]) -> bool {
 ///
 /// Beat count is 1 for downbeats, 2..N for subsequent beats in the measure.
 /// Times are formatted with 3 decimal places.
-pub fn write_beats_file(path: &Path, result: &BeatResult) -> Result<()> {
+pub fn write_beats_file(path: &Path, analysis: &BeatAnalysis) -> Result<()> {
     use std::io::Write;
 
-    let counts = beat_counts(result);
+    let counts = beat_counts(analysis);
     let file = std::fs::File::create(path)?;
     let mut writer = BufWriter::new(file);
 
-    for (&time, &count) in result.beats.iter().zip(counts.iter()) {
+    for (&time, &count) in analysis.beats.iter().zip(counts.iter()) {
         writeln!(writer, "{:.3}\t{}", time, count)?;
     }
 
@@ -69,15 +69,18 @@ pub fn write_beats_file(path: &Path, result: &BeatResult) -> Result<()> {
 /// Downbeats get an 880 Hz click, regular beats get 440 Hz.
 /// Each click is a 100ms sine wave with ADSR envelope.
 /// Output is mono 44100 Hz 32-bit float WAV.
-pub fn write_click_track(path: &Path, result: &BeatResult) -> Result<()> {
-    ensure!(!result.beats.is_empty(), "No beats to generate click track");
+pub fn write_click_track(path: &Path, analysis: &BeatAnalysis) -> Result<()> {
+    ensure!(
+        !analysis.beats.is_empty(),
+        "No beats to generate click track"
+    );
 
-    let counts = beat_counts(result);
-    let total_duration = result.beats.last().unwrap() + CLICK_DURATION + CLICK_DECAY;
+    let counts = beat_counts(analysis);
+    let total_duration = analysis.beats.last().unwrap() + CLICK_DURATION + CLICK_DECAY;
     let total_samples = (total_duration * CLICK_SAMPLE_RATE as f32) as usize;
     let mut buffer = vec![0.0f32; total_samples];
 
-    for (&beat_time, &count) in result.beats.iter().zip(counts.iter()) {
+    for (&beat_time, &count) in analysis.beats.iter().zip(counts.iter()) {
         let freq = if count == 1 { DOWNBEAT_FREQ } else { BEAT_FREQ };
         let click = generate_sine_click(freq, CLICK_SAMPLE_RATE);
         let start = (beat_time * CLICK_SAMPLE_RATE as f32) as usize;
@@ -94,15 +97,18 @@ pub fn write_click_track(path: &Path, result: &BeatResult) -> Result<()> {
 /// Output preserves the original sample rate. Output is mono.
 pub fn write_mixed_audio(
     path: &Path,
-    result: &BeatResult,
+    analysis: &BeatAnalysis,
     original_samples: &[f32],
     sample_rate: u32,
 ) -> Result<()> {
-    ensure!(!result.beats.is_empty(), "No beats to generate mixed audio");
+    ensure!(
+        !analysis.beats.is_empty(),
+        "No beats to generate mixed audio"
+    );
 
-    let counts = beat_counts(result);
+    let counts = beat_counts(analysis);
     let original_duration = original_samples.len() as f32 / sample_rate as f32;
-    let last_beat_end = result.beats.last().unwrap() + CLICK_DURATION + CLICK_DECAY;
+    let last_beat_end = analysis.beats.last().unwrap() + CLICK_DURATION + CLICK_DECAY;
     let total_duration = original_duration.max(last_beat_end);
     let total_samples = (total_duration * sample_rate as f32) as usize;
 
@@ -116,7 +122,7 @@ pub fn write_mixed_audio(
     }
 
     // Add clicks
-    for (&beat_time, &count) in result.beats.iter().zip(counts.iter()) {
+    for (&beat_time, &count) in analysis.beats.iter().zip(counts.iter()) {
         let freq = if count == 1 { DOWNBEAT_FREQ } else { BEAT_FREQ };
         let click = generate_sine_click(freq, sample_rate);
         let start = (beat_time * sample_rate as f32) as usize;
@@ -131,12 +137,12 @@ pub fn write_mixed_audio(
 ///
 /// Filters out unrealistic intervals (<0.1s or >3.0s, i.e. outside 20–600 BPM).
 /// Returns `None` if fewer than 2 valid intervals exist.
-pub fn calculate_bpm(result: &BeatResult) -> Option<f32> {
-    if result.beats.len() < 2 {
+pub fn calculate_bpm(analysis: &BeatAnalysis) -> Option<f32> {
+    if analysis.beats.len() < 2 {
         return None;
     }
 
-    let mut intervals: Vec<f32> = result
+    let mut intervals: Vec<f32> = analysis
         .beats
         .windows(2)
         .map(|w| w[1] - w[0])
@@ -177,10 +183,10 @@ pub struct JsonOutput {
     pub bpm: Option<f32>,
 }
 
-/// Build the JSON output structure from a `BeatResult`.
-pub fn build_json_output(result: &BeatResult) -> JsonOutput {
-    let counts = beat_counts(result);
-    let beats = result
+/// Build the JSON output structure from a `BeatAnalysis`.
+pub fn build_json_output(analysis: &BeatAnalysis) -> JsonOutput {
+    let counts = beat_counts(analysis);
+    let beats = analysis
         .beats
         .iter()
         .zip(counts.iter())
@@ -193,25 +199,69 @@ pub fn build_json_output(result: &BeatResult) -> JsonOutput {
 
     JsonOutput {
         beats,
-        downbeats: result.downbeats.clone(),
-        bpm: calculate_bpm(result),
+        downbeats: analysis.downbeats.clone(),
+        bpm: calculate_bpm(analysis),
     }
 }
 
 /// Write JSON output to stdout.
-pub fn print_json_stdout(result: &BeatResult) -> Result<()> {
-    let output = build_json_output(result);
+pub fn print_json_stdout(analysis: &BeatAnalysis) -> Result<()> {
+    let output = build_json_output(analysis);
     let json = serde_json::to_string_pretty(&output)?;
     println!("{}", json);
     Ok(())
 }
 
 /// Write JSON output to a file.
-pub fn write_json_file(path: &Path, result: &BeatResult) -> Result<()> {
-    let output = build_json_output(result);
+pub fn write_json_file(path: &Path, analysis: &BeatAnalysis) -> Result<()> {
+    let output = build_json_output(analysis);
     let file = std::fs::File::create(path)?;
     let writer = BufWriter::new(file);
     serde_json::to_writer_pretty(writer, &output)?;
+    Ok(())
+}
+
+/// Write the mel spectrogram as a numpy `.npy` file (v1.0 format).
+///
+/// The mel tensor has shape `[1, T, 128]`; the batch dimension is dropped and
+/// the file contains a 2-D float32 array of shape `(T, 128)`, C-order.
+/// The file can be loaded in Python with `numpy.load(path)`.
+pub fn write_mel_npy(path: &Path, analysis: &BeatAnalysis) -> Result<()> {
+    use std::io::Write;
+
+    let mel = &analysis.mel;
+    let t_frames = mel.shape[1];
+    let n_mels = mel.shape[2];
+
+    // Build the numpy dict header.
+    let dict = format!(
+        "{{'descr': '<f4', 'fortran_order': False, 'shape': ({}, {}), }}",
+        t_frames, n_mels
+    );
+
+    // Pad with spaces so that total = 10 (prefix) + header_len is a multiple of 64.
+    // header_len includes: dict + padding spaces + trailing '\n'.
+    let base = 10 + dict.len() + 1; // 10-byte prefix + dict + '\n'
+    let padding = (64 - base % 64) % 64;
+    let header_len = (dict.len() + padding + 1) as u16;
+
+    let file = std::fs::File::create(path)?;
+    let mut f = BufWriter::new(file);
+
+    f.write_all(b"\x93NUMPY")?; // magic
+    f.write_all(&[1u8, 0u8])?; // version 1.0
+    f.write_all(&header_len.to_le_bytes())?;
+    f.write_all(dict.as_bytes())?;
+    for _ in 0..padding {
+        f.write_all(b" ")?;
+    }
+    f.write_all(b"\n")?;
+
+    // Write [T, 128] float data (mel.data layout is [1, T, 128] row-major, batch=0).
+    for &v in &mel.data[..t_frames * n_mels] {
+        f.write_all(&v.to_le_bytes())?;
+    }
+
     Ok(())
 }
 
@@ -330,37 +380,47 @@ fn write_wav(path: &Path, samples: &[f32], sample_rate: u32) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime::Tensor;
     use std::io::Read;
 
-    fn make_result(beats: Vec<f32>, downbeats: Vec<f32>) -> BeatResult {
-        BeatResult { beats, downbeats }
+    fn make_analysis(beats: Vec<f32>, downbeats: Vec<f32>) -> BeatAnalysis {
+        BeatAnalysis {
+            beats,
+            downbeats,
+            mel: Tensor {
+                shape: vec![1, 0, 128],
+                data: vec![],
+            },
+            beat_logits: vec![],
+            downbeat_logits: vec![],
+        }
     }
 
     #[test]
     fn test_beat_counts_basic() {
-        let result = make_result(vec![0.5, 1.0, 1.5, 2.0], vec![0.5]);
-        let counts = beat_counts(&result);
+        let analysis = make_analysis(vec![0.5, 1.0, 1.5, 2.0], vec![0.5]);
+        let counts = beat_counts(&analysis);
         assert_eq!(counts, vec![1, 2, 3, 4]);
     }
 
     #[test]
     fn test_beat_counts_multiple_downbeats() {
-        let result = make_result(vec![0.5, 1.0, 1.5, 2.0, 2.5, 3.0], vec![0.5, 2.0]);
-        let counts = beat_counts(&result);
+        let analysis = make_analysis(vec![0.5, 1.0, 1.5, 2.0, 2.5, 3.0], vec![0.5, 2.0]);
+        let counts = beat_counts(&analysis);
         assert_eq!(counts, vec![1, 2, 3, 1, 2, 3]);
     }
 
     #[test]
     fn test_beat_counts_no_downbeats() {
-        let result = make_result(vec![0.5, 1.0, 1.5], vec![]);
-        let counts = beat_counts(&result);
+        let analysis = make_analysis(vec![0.5, 1.0, 1.5], vec![]);
+        let counts = beat_counts(&analysis);
         assert_eq!(counts, vec![1, 2, 3]);
     }
 
     #[test]
     fn test_beat_counts_beats_before_first_downbeat() {
-        let result = make_result(vec![0.5, 1.0, 1.5, 2.0], vec![1.5]);
-        let counts = beat_counts(&result);
+        let analysis = make_analysis(vec![0.5, 1.0, 1.5, 2.0], vec![1.5]);
+        let counts = beat_counts(&analysis);
         assert_eq!(counts, vec![1, 2, 1, 2]);
     }
 
@@ -368,9 +428,9 @@ mod tests {
     fn test_write_beats_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.beats");
-        let result = make_result(vec![0.1, 0.6, 1.1], vec![0.1]);
+        let analysis = make_analysis(vec![0.1, 0.6, 1.1], vec![0.1]);
 
-        write_beats_file(&path, &result).unwrap();
+        write_beats_file(&path, &analysis).unwrap();
 
         let mut content = String::new();
         std::fs::File::open(&path)
@@ -389,9 +449,9 @@ mod tests {
     fn test_write_click_track() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("clicks.wav");
-        let result = make_result(vec![0.1, 0.6, 1.1], vec![0.1]);
+        let analysis = make_analysis(vec![0.1, 0.6, 1.1], vec![0.1]);
 
-        write_click_track(&path, &result).unwrap();
+        write_click_track(&path, &analysis).unwrap();
 
         // Verify WAV file is valid
         let reader = hound::WavReader::open(&path).unwrap();
@@ -410,11 +470,11 @@ mod tests {
     fn test_write_mixed_audio() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("mixed.wav");
-        let result = make_result(vec![0.1, 0.6], vec![0.1]);
+        let analysis = make_analysis(vec![0.1, 0.6], vec![0.1]);
 
         // 2 seconds of silence at 44100 Hz
         let original = vec![0.0f32; 44100 * 2];
-        write_mixed_audio(&path, &result, &original, 44100).unwrap();
+        write_mixed_audio(&path, &analysis, &original, 44100).unwrap();
 
         let reader = hound::WavReader::open(&path).unwrap();
         let spec = reader.spec();
@@ -431,27 +491,27 @@ mod tests {
     #[test]
     fn test_calculate_bpm_120() {
         // Beats at 0.5s intervals = 120 BPM
-        let result = make_result(vec![0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0], vec![0.0]);
-        let bpm = calculate_bpm(&result).unwrap();
+        let analysis = make_analysis(vec![0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0], vec![0.0]);
+        let bpm = calculate_bpm(&analysis).unwrap();
         assert!((bpm - 120.0).abs() < 0.1, "Expected ~120 BPM, got {}", bpm);
     }
 
     #[test]
     fn test_calculate_bpm_too_few_beats() {
-        let result = make_result(vec![0.5], vec![]);
-        assert!(calculate_bpm(&result).is_none());
+        let analysis = make_analysis(vec![0.5], vec![]);
+        assert!(calculate_bpm(&analysis).is_none());
     }
 
     #[test]
     fn test_calculate_bpm_empty() {
-        let result = make_result(vec![], vec![]);
-        assert!(calculate_bpm(&result).is_none());
+        let analysis = make_analysis(vec![], vec![]);
+        assert!(calculate_bpm(&analysis).is_none());
     }
 
     #[test]
     fn test_build_json_output() {
-        let result = make_result(vec![0.5, 1.0, 1.5, 2.0, 2.5, 3.0], vec![0.5, 2.0]);
-        let json_out = build_json_output(&result);
+        let analysis = make_analysis(vec![0.5, 1.0, 1.5, 2.0, 2.5, 3.0], vec![0.5, 2.0]);
+        let json_out = build_json_output(&analysis);
 
         assert_eq!(json_out.beats.len(), 6);
         assert_eq!(json_out.downbeats, vec![0.5, 2.0]);
@@ -475,6 +535,51 @@ mod tests {
         assert!(parsed["beats"].is_array());
         assert!(parsed["downbeats"].is_array());
         assert!(parsed["bpm"].is_number());
+    }
+
+    #[test]
+    fn test_write_mel_npy() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mel.npy");
+
+        let t_frames = 10usize;
+        let n_mels = 128usize;
+        let data: Vec<f32> = (0..t_frames * n_mels).map(|i| i as f32).collect();
+        let analysis = BeatAnalysis {
+            beats: vec![],
+            downbeats: vec![],
+            mel: Tensor {
+                shape: vec![1, t_frames, n_mels],
+                data: data.clone(),
+            },
+            beat_logits: vec![],
+            downbeat_logits: vec![],
+        };
+
+        write_mel_npy(&path, &analysis).unwrap();
+
+        let bytes = std::fs::read(&path).unwrap();
+
+        // Verify numpy magic
+        assert_eq!(&bytes[0..6], b"\x93NUMPY");
+        // Version 1.0
+        assert_eq!(bytes[6], 1);
+        assert_eq!(bytes[7], 0);
+
+        // Total header size (10 bytes prefix) must be multiple of 64
+        let header_len = u16::from_le_bytes([bytes[8], bytes[9]]) as usize;
+        assert_eq!((10 + header_len) % 64, 0);
+
+        // Data starts at offset 10 + header_len
+        let data_offset = 10 + header_len;
+        assert_eq!(bytes.len(), data_offset + t_frames * n_mels * 4);
+
+        // Verify a few float values
+        let first = f32::from_le_bytes(bytes[data_offset..data_offset + 4].try_into().unwrap());
+        assert_eq!(first, 0.0);
+        let second =
+            f32::from_le_bytes(bytes[data_offset + 4..data_offset + 8].try_into().unwrap());
+        assert_eq!(second, 1.0);
     }
 
     #[test]
@@ -512,7 +617,6 @@ mod tests {
         let content = std::fs::read_to_string(&path).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
 
-        // Check file entries (summary only, no beat data)
         assert_eq!(parsed["files"].as_array().unwrap().len(), 2);
         assert_eq!(parsed["files"][0]["input"], "song1.mp3");
         assert_eq!(parsed["files"][0]["duration_secs"], 120.0);
@@ -521,11 +625,9 @@ mod tests {
             parsed["files"][0]["outputs"],
             serde_json::json!(["song1.json", "song1.beats"])
         );
-        // No beat data in summary
         assert!(parsed["files"][0]["beats"].is_null());
         assert!(parsed["files"][0]["bpm"].is_null());
 
-        // Check summary
         assert_eq!(parsed["summary"]["total_files"], 2);
         assert_eq!(parsed["summary"]["failed_files"], 0);
         assert_eq!(parsed["summary"]["total_duration_secs"], 180.0);

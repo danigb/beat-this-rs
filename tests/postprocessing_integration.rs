@@ -60,26 +60,23 @@ fn test_postprocessing_with_real_inference() {
 
     // Post-process.
     let pp = PostProcessor::default();
-    let result = pp
+    let (beats, downbeats) = pp
         .process(&beat_logits, &downbeat_logits)
         .expect("Post-processing failed");
 
     // Beats and downbeats should be non-empty for real music.
-    assert!(!result.beats.is_empty(), "No beats detected in real music");
-    assert!(
-        !result.downbeats.is_empty(),
-        "No downbeats detected in real music"
-    );
+    assert!(!beats.is_empty(), "No beats detected in real music");
+    assert!(!downbeats.is_empty(), "No downbeats detected in real music");
 
     // All times should be non-negative and within audio duration.
-    for &t in &result.beats {
+    for &t in &beats {
         assert!(t >= 0.0, "Negative beat time: {t}");
         assert!(
             t <= duration + 0.1,
             "Beat time {t} exceeds duration {duration}"
         );
     }
-    for &t in &result.downbeats {
+    for &t in &downbeats {
         assert!(t >= 0.0, "Negative downbeat time: {t}");
         assert!(
             t <= duration + 0.1,
@@ -89,25 +86,22 @@ fn test_postprocessing_with_real_inference() {
 
     // Times should be sorted.
     assert!(
-        result.beats.windows(2).all(|w| w[0] <= w[1]),
+        beats.windows(2).all(|w| w[0] <= w[1]),
         "Beat times are not sorted"
     );
     assert!(
-        result.downbeats.windows(2).all(|w| w[0] <= w[1]),
+        downbeats.windows(2).all(|w| w[0] <= w[1]),
         "Downbeat times are not sorted"
     );
 
     // Every downbeat should appear in the beats vector (snapping invariant).
-    for &d in &result.downbeats {
-        assert!(
-            result.beats.contains(&d),
-            "Downbeat time {d} not found in beats"
-        );
+    for &d in &downbeats {
+        assert!(beats.contains(&d), "Downbeat time {d} not found in beats");
     }
 
     // Beat intervals should be musically plausible (0.2s–2.0s for most music).
-    if result.beats.len() >= 2 {
-        let intervals: Vec<f32> = result.beats.windows(2).map(|w| w[1] - w[0]).collect();
+    if beats.len() >= 2 {
+        let intervals: Vec<f32> = beats.windows(2).map(|w| w[1] - w[0]).collect();
         let median = {
             let mut sorted = intervals.clone();
             sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -122,11 +116,11 @@ fn test_postprocessing_with_real_inference() {
     eprintln!(
         "Post-processing: {:.1}s audio → {} beats, {} downbeats",
         duration,
-        result.beats.len(),
-        result.downbeats.len(),
+        beats.len(),
+        downbeats.len(),
     );
-    if result.beats.len() >= 2 {
-        let intervals: Vec<f32> = result.beats.windows(2).map(|w| w[1] - w[0]).collect();
+    if beats.len() >= 2 {
+        let intervals: Vec<f32> = beats.windows(2).map(|w| w[1] - w[0]).collect();
         let median = {
             let mut sorted = intervals.clone();
             sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -134,13 +128,10 @@ fn test_postprocessing_with_real_inference() {
         };
         let bpm = 60.0 / median;
         eprintln!("  Median beat interval: {median:.3}s ({bpm:.1} BPM)");
-        eprintln!(
-            "  First 5 beats: {:?}",
-            &result.beats[..result.beats.len().min(5)]
-        );
+        eprintln!("  First 5 beats: {:?}", &beats[..beats.len().min(5)]);
         eprintln!(
             "  First 5 downbeats: {:?}",
-            &result.downbeats[..result.downbeats.len().min(5)]
+            &downbeats[..downbeats.len().min(5)]
         );
     }
 }

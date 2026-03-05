@@ -3,15 +3,6 @@ use anyhow::{ensure, Result};
 /// Default frames per second for the beat model.
 const FPS: f32 = 50.0;
 
-/// Beat detection results: sorted timestamps in seconds.
-#[derive(Debug, Clone)]
-pub struct BeatResult {
-    /// Beat times in seconds (sorted, deduplicated).
-    pub beats: Vec<f32>,
-    /// Downbeat times in seconds (sorted, deduplicated, snapped to nearest beat).
-    pub downbeats: Vec<f32>,
-}
-
 /// Post-processes raw beat/downbeat logits into timestamped events.
 ///
 /// Applies max-pool peak picking, thresholding, deduplication, and
@@ -33,11 +24,14 @@ impl PostProcessor {
         Self { fps }
     }
 
-    /// Process beat and downbeat logits into a `BeatResult`.
+    /// Process beat and downbeat logits into `(beats, downbeats)` timestamps in seconds.
     ///
     /// Both input slices must have the same length (one value per spectrogram frame).
-    /// Returns beat and downbeat times in seconds.
-    pub fn process(&self, beat_logits: &[f32], downbeat_logits: &[f32]) -> Result<BeatResult> {
+    pub fn process(
+        &self,
+        beat_logits: &[f32],
+        downbeat_logits: &[f32],
+    ) -> Result<(Vec<f32>, Vec<f32>)> {
         ensure!(
             beat_logits.len() == downbeat_logits.len(),
             "beat_logits length ({}) != downbeat_logits length ({})",
@@ -56,7 +50,7 @@ impl PostProcessor {
 
         snap_downbeats_to_beats(&beats, &mut downbeats);
 
-        Ok(BeatResult { beats, downbeats })
+        Ok((beats, downbeats))
     }
 }
 
@@ -271,18 +265,18 @@ mod tests {
         downbeat_logits[51] = 2.0;
 
         let pp = PostProcessor::new(50.0);
-        let result = pp.process(&beat_logits, &downbeat_logits).unwrap();
+        let (beats, downbeats) = pp.process(&beat_logits, &downbeat_logits).unwrap();
 
-        assert_eq!(result.beats, vec![1.0, 2.0, 3.0]); // 50/50, 100/50, 150/50
-        assert_eq!(result.downbeats, vec![1.0]); // 51/50=1.02 snaps to 1.0
+        assert_eq!(beats, vec![1.0, 2.0, 3.0]); // 50/50, 100/50, 150/50
+        assert_eq!(downbeats, vec![1.0]); // 51/50=1.02 snaps to 1.0
     }
 
     #[test]
     fn test_process_empty_logits() {
         let pp = PostProcessor::default();
-        let result = pp.process(&[], &[]).unwrap();
-        assert!(result.beats.is_empty());
-        assert!(result.downbeats.is_empty());
+        let (beats, downbeats) = pp.process(&[], &[]).unwrap();
+        assert!(beats.is_empty());
+        assert!(downbeats.is_empty());
     }
 
     #[test]
