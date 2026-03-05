@@ -5,9 +5,8 @@ use anyhow::{bail, ensure, Context};
 use clap::Parser;
 
 use beat_this::output;
-use beat_this::postprocessing::BeatResult;
 use beat_this::runtime::InferenceRuntime;
-use beat_this::InferenceSession;
+use beat_this::{BeatAnalysis, InferenceSession};
 
 const DEFAULT_MODEL_PATH: &str = "models/beat_this.onnx";
 const DEFAULT_MEL_MODEL_PATH: &str = "models/mel_spectrogram.onnx";
@@ -49,6 +48,10 @@ struct Cli {
     /// Write mixed audio WAV [=FILE]
     #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "")]
     mix: Option<String>,
+
+    /// Write mel spectrogram as numpy .npy file [=FILE]
+    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "")]
+    mel: Option<String>,
 
     /// Overwrite existing output files
     #[arg(long)]
@@ -169,6 +172,7 @@ struct OutputFlags {
     beats: Option<String>,
     click: Option<String>,
     mix: Option<String>,
+    mel: Option<String>,
     overwrite: bool,
 }
 
@@ -180,13 +184,19 @@ impl OutputFlags {
             beats: cli.beats.clone(),
             click: cli.click.clone(),
             mix: cli.mix.clone(),
+            mel: cli.mel.clone(),
             overwrite: cli.overwrite,
         }
     }
 
     /// Build for batch mode: if no flags set, default to --json (auto-named).
     fn for_batch(cli: &Cli) -> Self {
-        if cli.json.is_some() || cli.beats.is_some() || cli.click.is_some() || cli.mix.is_some() {
+        if cli.json.is_some()
+            || cli.beats.is_some()
+            || cli.click.is_some()
+            || cli.mix.is_some()
+            || cli.mel.is_some()
+        {
             Self::from_cli(cli)
         } else {
             Self {
@@ -194,13 +204,18 @@ impl OutputFlags {
                 beats: None,
                 click: None,
                 mix: None,
+                mel: None,
                 overwrite: cli.overwrite,
             }
         }
     }
 
     fn has_flags(&self) -> bool {
-        self.json.is_some() || self.beats.is_some() || self.click.is_some() || self.mix.is_some()
+        self.json.is_some()
+            || self.beats.is_some()
+            || self.click.is_some()
+            || self.mix.is_some()
+            || self.mel.is_some()
     }
 }
 
@@ -239,14 +254,14 @@ fn write_if_needed(
 /// Write all requested outputs for a single file, returning list of written file names.
 fn write_outputs(
     input: &Path,
-    result: &BeatResult,
+    analysis: &BeatAnalysis,
     flags: &OutputFlags,
 ) -> anyhow::Result<Vec<String>> {
     let mut written = Vec::new();
 
     if let Some(path) = resolve_output_path(input, &flags.json, "json") {
         if write_if_needed(&path, flags.overwrite, |p| {
-            output::write_json_file(p, result)
+            output::write_json_file(p, analysis)
         })? {
             written.push(path.display().to_string());
         }
@@ -254,7 +269,7 @@ fn write_outputs(
 
     if let Some(path) = resolve_output_path(input, &flags.beats, "beats") {
         if write_if_needed(&path, flags.overwrite, |p| {
-            output::write_beats_file(p, result)
+            output::write_beats_file(p, analysis)
         })? {
             written.push(path.display().to_string());
         }
@@ -262,7 +277,7 @@ fn write_outputs(
 
     if let Some(path) = resolve_output_path(input, &flags.click, "click.wav") {
         if write_if_needed(&path, flags.overwrite, |p| {
-            output::write_click_track(p, result)
+            output::write_click_track(p, analysis)
         })? {
             written.push(path.display().to_string());
         }
@@ -271,10 +286,18 @@ fn write_outputs(
     if let Some(path) = resolve_output_path(input, &flags.mix, "mix.wav") {
         let write_mix = |p: &Path| -> anyhow::Result<()> {
             let audio = beat_this::load_audio(input, 44100)?;
-            output::write_mixed_audio(p, result, &audio.samples, audio.sample_rate)?;
+            output::write_mixed_audio(p, analysis, &audio.samples, audio.sample_rate)?;
             Ok(())
         };
         if write_if_needed(&path, flags.overwrite, write_mix)? {
+            written.push(path.display().to_string());
+        }
+    }
+
+    if let Some(path) = resolve_output_path(input, &flags.mel, "mel.npy") {
+        if write_if_needed(&path, flags.overwrite, |p| {
+            output::write_mel_npy(p, analysis)
+        })? {
             written.push(path.display().to_string());
         }
     }
@@ -284,13 +307,13 @@ fn write_outputs(
 
 // --- Processing ---
 
-/// Result of processing a single file (beat result + audio duration).
+/// Result of processing a single file (analysis + audio duration).
 struct FileResult {
-    beat_result: BeatResult,
+    analysis: BeatAnalysis,
     duration_secs: f32,
 }
 
-/// Process a single audio file through the pipeline, returning beats and duration.
+/// Process a single audio file through the pipeline, returning analysis and duration.
 fn process_single_file<S: InferenceSession>(
     bt: &mut beat_this::BeatThis<S>,
     path: &Path,
@@ -325,7 +348,7 @@ fn process_single_file<S: InferenceSession>(
     }
 
     let t = Instant::now();
-    let beat_result = bt.post.process(&beat_logits, &downbeat_logits)?;
+    let (beats, downbeats) = bt.post.process(&beat_logits, &downbeat_logits)?;
     if verbose {
         eprintln!(
             "[timing] Post-processing: {:.3}s",
@@ -334,7 +357,13 @@ fn process_single_file<S: InferenceSession>(
     }
 
     Ok(FileResult {
-        beat_result,
+        analysis: BeatAnalysis {
+            beats,
+            downbeats,
+            mel,
+            beat_logits,
+            downbeat_logits,
+        },
         duration_secs,
     })
 }
@@ -348,22 +377,22 @@ fn run_pipeline<S: InferenceSession>(
     eprintln!("Processing {}...", input_path.display());
 
     let file_result = process_single_file(bt, input_path, cli.verbose)?;
-    let result = &file_result.beat_result;
+    let analysis = &file_result.analysis;
 
-    let json_out = output::build_json_output(result);
+    let json_out = output::build_json_output(analysis);
     eprintln!(
         "Found {} beats ({} downbeats, {:.1} BPM)",
-        result.beats.len(),
-        result.downbeats.len(),
+        analysis.beats.len(),
+        analysis.downbeats.len(),
         json_out.bpm.unwrap_or(0.0),
     );
 
     let flags = OutputFlags::from_cli(cli);
     if !flags.has_flags() {
         // Default: JSON to stdout
-        output::print_json_stdout(result)?;
+        output::print_json_stdout(analysis)?;
     } else {
-        let written = write_outputs(input_path, result, &flags)?;
+        let written = write_outputs(input_path, analysis, &flags)?;
         if !written.is_empty() {
             eprintln!("Wrote {}", written.join(", "));
         }
@@ -402,9 +431,9 @@ fn run_batch<S: InferenceSession>(
         };
         let elapsed = t.elapsed().as_secs_f64();
 
-        let json_out = output::build_json_output(&result.beat_result);
+        let json_out = output::build_json_output(&result.analysis);
 
-        let written = write_outputs(path, &result.beat_result, &flags)?;
+        let written = write_outputs(path, &result.analysis, &flags)?;
 
         if written.is_empty() {
             eprintln!(
@@ -412,7 +441,7 @@ fn run_batch<S: InferenceSession>(
                 i + 1,
                 files.len(),
                 filename,
-                result.beat_result.beats.len(),
+                result.analysis.beats.len(),
                 json_out.bpm.unwrap_or(0.0),
                 elapsed
             );
@@ -422,7 +451,7 @@ fn run_batch<S: InferenceSession>(
                 i + 1,
                 files.len(),
                 filename,
-                result.beat_result.beats.len(),
+                result.analysis.beats.len(),
                 json_out.bpm.unwrap_or(0.0),
                 elapsed,
                 written.join(", ")

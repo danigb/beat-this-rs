@@ -42,8 +42,8 @@ fn test_full_pipeline_to_beats_file() {
     .expect("Failed to create BeatThis");
 
     let result = bt
-        .process_file(Path::new(TEST_AUDIO_PATH))
-        .expect("process_file failed");
+        .analyze_file(Path::new(TEST_AUDIO_PATH))
+        .expect("analyze_file failed");
 
     let dir = tempfile::tempdir().unwrap();
     let beats_path = dir.path().join("output.beats");
@@ -94,8 +94,8 @@ fn test_full_pipeline_to_click_track() {
     .expect("Failed to create BeatThis");
 
     let result = bt
-        .process_file(Path::new(TEST_AUDIO_PATH))
-        .expect("process_file failed");
+        .analyze_file(Path::new(TEST_AUDIO_PATH))
+        .expect("analyze_file failed");
 
     let dir = tempfile::tempdir().unwrap();
     let wav_path = dir.path().join("clicks.wav");
@@ -132,8 +132,8 @@ fn test_full_pipeline_bpm() {
     .expect("Failed to create BeatThis");
 
     let result = bt
-        .process_file(Path::new(TEST_AUDIO_PATH))
-        .expect("process_file failed");
+        .analyze_file(Path::new(TEST_AUDIO_PATH))
+        .expect("analyze_file failed");
 
     let bpm = output::calculate_bpm(&result);
     assert!(bpm.is_some(), "BPM calculation should succeed");

@@ -118,7 +118,7 @@ fn test_rten_full_pipeline() {
     let mut bt = beat_this::BeatThis::new(&runtime, mel_path, beat_path)
         .expect("Failed to create BeatThis with rten");
     let result = bt
-        .process_file(audio_path)
+        .analyze_file(audio_path)
         .expect("Full pipeline failed with rten");
 
     assert!(!result.beats.is_empty(), "should detect beats");

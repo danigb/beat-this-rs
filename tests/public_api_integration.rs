@@ -26,7 +26,7 @@ fn skip_if_missing() -> bool {
 }
 
 #[test]
-fn test_process_file() {
+fn test_analyze_file() {
     if skip_if_missing() {
         eprintln!("Skipping test: required files not found");
         return;
@@ -41,8 +41,8 @@ fn test_process_file() {
     .expect("Failed to create BeatThis");
 
     let result = bt
-        .process_file(Path::new(TEST_AUDIO_PATH))
-        .expect("process_file failed");
+        .analyze_file(Path::new(TEST_AUDIO_PATH))
+        .expect("analyze_file failed");
 
     // Beats and downbeats should be non-empty for real music.
     assert!(!result.beats.is_empty(), "No beats detected");
@@ -75,7 +75,7 @@ fn test_process_file() {
     // Beat intervals should be musically plausible.
     if result.beats.len() >= 2 {
         let mut intervals: Vec<f32> = result.beats.windows(2).map(|w| w[1] - w[0]).collect();
-        intervals.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        intervals.sort_by(|a: &f32, b: &f32| a.partial_cmp(b).unwrap());
         let median = intervals[intervals.len() / 2];
         assert!(
             median > 0.2 && median < 2.0,
@@ -83,7 +83,7 @@ fn test_process_file() {
         );
         let bpm = 60.0 / median;
         eprintln!(
-            "process_file: {} beats, {} downbeats, {bpm:.1} BPM",
+            "analyze_file: {} beats, {} downbeats, {bpm:.1} BPM",
             result.beats.len(),
             result.downbeats.len()
         );
@@ -91,7 +91,7 @@ fn test_process_file() {
 }
 
 #[test]
-fn test_process_audio() {
+fn test_analyze_audio() {
     if skip_if_missing() {
         eprintln!("Skipping test: required files not found");
         return;
@@ -105,40 +105,40 @@ fn test_process_audio() {
     )
     .expect("Failed to create BeatThis");
 
-    // Load audio manually, then pass to process_audio.
+    // Load audio manually, then pass to analyze_audio.
     let audio =
         beat_this::load_audio(Path::new(TEST_AUDIO_PATH), 22050).expect("Failed to load audio");
     let result = bt
-        .process_audio(&audio.samples, audio.sample_rate)
-        .expect("process_audio failed");
+        .analyze_audio(&audio.samples, audio.sample_rate)
+        .expect("analyze_audio failed");
 
     assert!(!result.beats.is_empty(), "No beats detected");
     assert!(!result.downbeats.is_empty(), "No downbeats detected");
 
-    // Compare with process_file: results should be identical since
+    // Compare with analyze_file: results should be identical since
     // both paths go through the same pipeline with the same sample rate.
     let result2 = bt
-        .process_file(Path::new(TEST_AUDIO_PATH))
-        .expect("process_file failed");
+        .analyze_file(Path::new(TEST_AUDIO_PATH))
+        .expect("analyze_file failed");
 
     assert_eq!(
         result.beats, result2.beats,
-        "process_audio and process_file produced different beats"
+        "analyze_audio and analyze_file produced different beats"
     );
     assert_eq!(
         result.downbeats, result2.downbeats,
-        "process_audio and process_file produced different downbeats"
+        "analyze_audio and analyze_file produced different downbeats"
     );
 
     eprintln!(
-        "process_audio: {} beats, {} downbeats (matches process_file)",
+        "analyze_audio: {} beats, {} downbeats (matches analyze_file)",
         result.beats.len(),
         result.downbeats.len()
     );
 }
 
 #[test]
-fn test_process_audio_different_sample_rate() {
+fn test_analyze_audio_different_sample_rate() {
     if skip_if_missing() {
         eprintln!("Skipping test: required files not found");
         return;
@@ -158,8 +158,8 @@ fn test_process_audio_different_sample_rate() {
     assert_eq!(audio.sample_rate, 44100);
 
     let result = bt
-        .process_audio(&audio.samples, audio.sample_rate)
-        .expect("process_audio with 44100 Hz failed");
+        .analyze_audio(&audio.samples, audio.sample_rate)
+        .expect("analyze_audio with 44100 Hz failed");
 
     // Pipeline should still produce valid results after internal resampling.
     assert!(!result.beats.is_empty(), "No beats detected at 44100 Hz");
@@ -170,7 +170,7 @@ fn test_process_audio_different_sample_rate() {
 
     if result.beats.len() >= 2 {
         let mut intervals: Vec<f32> = result.beats.windows(2).map(|w| w[1] - w[0]).collect();
-        intervals.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        intervals.sort_by(|a: &f32, b: &f32| a.partial_cmp(b).unwrap());
         let median = intervals[intervals.len() / 2];
         assert!(
             median > 0.2 && median < 2.0,
@@ -178,7 +178,7 @@ fn test_process_audio_different_sample_rate() {
         );
         let bpm = 60.0 / median;
         eprintln!(
-            "process_audio (44100 Hz): {} beats, {} downbeats, {bpm:.1} BPM",
+            "analyze_audio (44100 Hz): {} beats, {} downbeats, {bpm:.1} BPM",
             result.beats.len(),
             result.downbeats.len()
         );
