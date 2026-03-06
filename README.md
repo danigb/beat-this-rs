@@ -186,12 +186,10 @@ let mut bt = BeatThis::new(
     Path::new("models/beat_this.onnx"),
 )?;
 
-// Process an audio file (beats and downbeats only)
-let result = bt.process_file(Path::new("input.wav"))?;
-println!("Found {} beats, {} downbeats", result.beats.len(), result.downbeats.len());
-
-// Full analysis including mel spectrogram
+// Analyze an audio file
 let analysis = bt.analyze_file(Path::new("input.wav"))?;
+
+println!("Found {} beats, {} downbeats", analysis.beats.len(), analysis.downbeats.len());
 println!("Mel shape: {:?}", analysis.mel.shape); // [1, T, 128]
 for (i, &time) in analysis.beats.iter().enumerate() {
     println!("Beat {}: {:.3}s", i, time);
