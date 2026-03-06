@@ -1,10 +1,9 @@
 use std::panic::AssertUnwindSafe;
 use std::path::Path;
 
-use beat_this::inference::BeatInference;
-use beat_this::mel::{self, MelProcessor};
-use beat_this::runtime::ort::OrtRuntime;
-use beat_this::{InferenceRuntime, Tensor};
+use beat_this::{
+    num_mel_frames, BeatInference, InferenceRuntime, MelProcessor, OrtRuntime, Tensor,
+};
 
 /// Check if the ORT dynamic library is available at runtime.
 /// ort with `load-dynamic` panics if the dylib isn't found, so we use catch_unwind.
@@ -178,7 +177,7 @@ fn test_beat_inference_with_real_audio() {
     let mel = mel_proc
         .process(&audio.samples)
         .expect("Mel processing failed");
-    let mel_frames = mel::num_frames(&mel);
+    let mel_frames = num_mel_frames(&mel);
 
     let mut beat_proc = BeatInference::new(beat_session);
     let (beat_logits, downbeat_logits) = beat_proc.process(&mel).expect("Beat inference failed");

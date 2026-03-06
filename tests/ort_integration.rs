@@ -1,8 +1,7 @@
 use std::panic::AssertUnwindSafe;
 use std::path::Path;
 
-use beat_this::runtime::ort::OrtRuntime;
-use beat_this::{InferenceRuntime, InferenceSession, Tensor};
+use beat_this::{InferenceRuntime, InferenceSession, OrtRuntime, Tensor};
 
 /// Check if the ORT dynamic library is available at runtime.
 /// ort with `load-dynamic` panics if the dylib isn't found, so we use catch_unwind.

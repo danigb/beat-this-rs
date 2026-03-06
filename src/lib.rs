@@ -1,9 +1,9 @@
-pub mod audio;
-pub mod inference;
-pub mod mel;
-pub mod output;
-pub mod postprocessing;
-pub mod runtime;
+mod audio;
+mod inference;
+mod mel;
+mod output;
+mod postprocessing;
+mod runtime;
 
 use std::path::Path;
 
@@ -11,9 +11,10 @@ use anyhow::Result;
 
 pub use audio::{load_audio, AudioData};
 pub use inference::BeatInference;
-pub use mel::MelProcessor;
+pub use mel::{num_frames as num_mel_frames, MelProcessor};
+pub use output::*;
 pub use postprocessing::PostProcessor;
-pub use runtime::{InferenceRuntime, InferenceSession, Tensor};
+pub use runtime::{ort::OrtRuntime, rten::RtenRuntime, InferenceRuntime, InferenceSession, Tensor};
 
 /// Target sample rate expected by the mel spectrogram model.
 const TARGET_SAMPLE_RATE: u32 = 22050;

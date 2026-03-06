@@ -1,11 +1,9 @@
 use std::panic::AssertUnwindSafe;
 use std::path::Path;
 
-use beat_this::inference::BeatInference;
-use beat_this::mel::{self, MelProcessor};
-use beat_this::postprocessing::PostProcessor;
-use beat_this::runtime::ort::OrtRuntime;
-use beat_this::InferenceRuntime;
+use beat_this::{
+    num_mel_frames, BeatInference, InferenceRuntime, MelProcessor, OrtRuntime, PostProcessor,
+};
 
 const MEL_MODEL_PATH: &str = "references/remixatron_rust/MelSpectrogram_Ultimate.onnx";
 const BEAT_MODEL_PATH: &str = "references/remixatron_rust/BeatThis_small0.onnx";
@@ -48,7 +46,7 @@ fn test_postprocessing_with_real_inference() {
         .expect("Failed to load mel model");
     let mut mel_proc = MelProcessor::new(mel_session);
     let mel = mel_proc.process(&audio.samples).expect("Mel failed");
-    let mel_frames = mel::num_frames(&mel);
+    let mel_frames = num_mel_frames(&mel);
 
     let beat_session = runtime
         .load_model(beat_path)

@@ -1,9 +1,9 @@
 use std::panic::AssertUnwindSafe;
 use std::path::Path;
 
-use beat_this::output;
-use beat_this::runtime::ort::OrtRuntime;
-use beat_this::BeatThis;
+use beat_this::{
+    beat_counts, calculate_bpm, write_beats_file, write_click_track, BeatThis, OrtRuntime,
+};
 
 const MEL_MODEL_PATH: &str = "references/remixatron_rust/MelSpectrogram_Ultimate.onnx";
 const BEAT_MODEL_PATH: &str = "references/remixatron_rust/BeatThis_small0.onnx";
@@ -48,7 +48,7 @@ fn test_full_pipeline_to_beats_file() {
     let dir = tempfile::tempdir().unwrap();
     let beats_path = dir.path().join("output.beats");
 
-    output::write_beats_file(&beats_path, &result).expect("write_beats_file failed");
+    write_beats_file(&beats_path, &result).expect("write_beats_file failed");
 
     let content = std::fs::read_to_string(&beats_path).unwrap();
     let lines: Vec<&str> = content.lines().collect();
@@ -66,7 +66,7 @@ fn test_full_pipeline_to_beats_file() {
     }
 
     // First downbeat should have count 1.
-    let counts = output::beat_counts(&result);
+    let counts = beat_counts(&result);
     let first_downbeat_idx = result
         .beats
         .iter()
@@ -100,7 +100,7 @@ fn test_full_pipeline_to_click_track() {
     let dir = tempfile::tempdir().unwrap();
     let wav_path = dir.path().join("clicks.wav");
 
-    output::write_click_track(&wav_path, &result).expect("write_click_track failed");
+    write_click_track(&wav_path, &result).expect("write_click_track failed");
 
     // Verify WAV is valid and has expected format.
     let reader = hound::WavReader::open(&wav_path).unwrap();
@@ -135,7 +135,7 @@ fn test_full_pipeline_bpm() {
         .analyze_file(Path::new(TEST_AUDIO_PATH))
         .expect("analyze_file failed");
 
-    let bpm = output::calculate_bpm(&result);
+    let bpm = calculate_bpm(&result);
     assert!(bpm.is_some(), "BPM calculation should succeed");
 
     let bpm = bpm.unwrap();
