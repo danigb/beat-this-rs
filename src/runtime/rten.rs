@@ -3,10 +3,10 @@ use std::path::Path;
 
 use anyhow::{anyhow, Result};
 use rten::Value as RtenValue;
-use rten::{Model, NodeId};
+use rten::{Model as RtenGraph, NodeId};
 use rten_tensor::{AsView, Layout};
 
-use super::{InferenceRuntime, InferenceSession, Tensor};
+use super::{Model, Runtime, Tensor};
 
 /// Pure-Rust ONNX inference runtime backed by rten.
 ///
@@ -14,11 +14,11 @@ use super::{InferenceRuntime, InferenceSession, Tensor};
 /// core count). No configuration needed — just load and run.
 pub struct RtenRuntime;
 
-impl InferenceRuntime for RtenRuntime {
-    type Session = RtenSession;
+impl Runtime for RtenRuntime {
+    type Model = RtenModel;
 
-    fn load_model(&self, path: &Path) -> Result<RtenSession> {
-        let model = Model::load_file(path)?;
+    fn load_model(&self, path: &Path) -> Result<RtenModel> {
+        let model = RtenGraph::load_file(path)?;
 
         // Build name→NodeId map for inputs
         let input_map: HashMap<String, NodeId> = model
@@ -44,7 +44,7 @@ impl InferenceRuntime for RtenRuntime {
 
         let output_ids: Vec<NodeId> = model.output_ids().to_vec();
 
-        Ok(RtenSession {
+        Ok(RtenModel {
             model,
             input_map,
             output_names,
@@ -53,8 +53,8 @@ impl InferenceRuntime for RtenRuntime {
     }
 }
 
-pub struct RtenSession {
-    model: Model,
+pub struct RtenModel {
+    model: RtenGraph,
     /// "mel_spectrogram" → NodeId
     input_map: HashMap<String, NodeId>,
     /// [(NodeId, "beat"), (NodeId, "downbeat")]
@@ -63,7 +63,7 @@ pub struct RtenSession {
     output_ids: Vec<NodeId>,
 }
 
-impl InferenceSession for RtenSession {
+impl Model for RtenModel {
     fn run(&mut self, inputs: &[(&str, &Tensor)]) -> Result<HashMap<String, Tensor>> {
         // Convert named inputs to (NodeId, Value) pairs
         let rten_inputs: Vec<(NodeId, RtenValue)> = inputs

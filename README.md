@@ -19,10 +19,11 @@ The original system uses a transformer-based neural network to detect musical be
 
 ## Features
 
-- **Two Runtime Backends**: Choose between `rten` (pure Rust, zero external dependencies) or `ort` (ONNX Runtime)
+- **Two Runtime Backends**: Choose between `rten` (default, pure Rust, zero external dependencies) or `ort` (ONNX Runtime, dynamicaly loaded)
 - **Multiple Output Formats**: JSON, plain text `.beats` files, click track WAV, or mixed audio
 - **Batch Processing**: Process entire directories of audio files with summary statistics
 - **BPM Estimation**: Automatic tempo detection from beat timestamps
+- **Mel Spectrogram Export**: Save mel spectrograms as `.npy` files for downstream analysis
 - **Rust Library**: Clean public API for embedding in other applications
 - **Multiple Model Variants**: Standard and small model sizes
 
@@ -156,26 +157,27 @@ beat-this "music/**/*.mp3" --json --beats
 
 ### CLI Options
 
-| Option                  | Description                                             |
-| ----------------------- | ------------------------------------------------------- |
-| `<input>`               | Audio file, directory, or glob pattern                  |
-| `--json [FILE]`         | Write JSON output (default ext: `.json`)                |
-| `--beats [FILE]`        | Write beats text file (default ext: `.beats`)           |
-| `--click [FILE]`        | Write click-track WAV (default ext: `.click.wav`)       |
-| `--mix [FILE]`          | Write mixed audio WAV (default ext: `.mix.wav`)         |
-| `--overwrite`           | Overwrite existing output files                         |
-| `--model <PATH>`        | Beat model path (default: `models/beat_this.onnx`)      |
-| `--mel-model <PATH>`    | Mel model path (default: `models/mel_spectrogram.onnx`) |
-| `--runtime <rten\|ort>` | Inference backend (default: `rten`)                     |
-| `-r, --recursive`       | Recurse into subdirectories                             |
-| `-v, --verbose`         | Print timing for each stage                             |
-| `--profile <PREFIX>`    | ORT profiling trace output                              |
+| Option                  | Description                                                     |
+| ----------------------- | --------------------------------------------------------------- |
+| `<input>`               | Audio file, directory, or glob pattern                          |
+| `--json [FILE]`         | Write JSON output (default ext: `.json`)                        |
+| `--beats [FILE]`        | Write beats text file (default ext: `.beats`)                   |
+| `--click [FILE]`        | Write click-track WAV (default ext: `.click.wav`)               |
+| `--mix [FILE]`          | Write mixed audio WAV (default ext: `.mix.wav`)                 |
+| `--overwrite`           | Overwrite existing output files                                 |
+| `--mel [FILE]`          | Write mel spectrogram as numpy `.npy` (default ext: `.mel.npy`) |
+| `--model <PATH>`        | Beat model path (default: `models/beat_this.onnx`)              |
+| `--mel-model <PATH>`    | Mel model path (default: `models/mel_spectrogram.onnx`)         |
+| `--runtime <rten\|ort>` | Inference backend (default: `rten`)                             |
+| `-r, --recursive`       | Recurse into subdirectories                                     |
+| `-v, --verbose`         | Print timing for each stage                                     |
+| `--profile <PREFIX>`    | ORT profiling trace output                                      |
 
 ### Rust API
 
 ```rust
 use std::path::Path;
-use beat_this::{BeatThis, runtime::rten::RtenRuntime};
+use beat_this::{BeatThis, RtenRuntime};
 
 // Initialize with the pure-Rust runtime
 let mut bt = BeatThis::new(
@@ -184,11 +186,12 @@ let mut bt = BeatThis::new(
     Path::new("models/beat_this.onnx"),
 )?;
 
-// Process an audio file
-let result = bt.process_file(Path::new("input.wav"))?;
+// Analyze an audio file
+let analysis = bt.analyze_file(Path::new("input.wav"))?;
 
-println!("Found {} beats, {} downbeats", result.beats.len(), result.downbeats.len());
-for (i, &time) in result.beats.iter().enumerate() {
+println!("Found {} beats, {} downbeats", analysis.beats.len(), analysis.downbeats.len());
+println!("Mel shape: {:?}", analysis.mel.shape); // [1, T, 128]
+for (i, &time) in analysis.beats.iter().enumerate() {
     println!("Beat {}: {:.3}s", i, time);
 }
 ```
