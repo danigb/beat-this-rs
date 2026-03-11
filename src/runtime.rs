@@ -13,15 +13,15 @@ pub struct Tensor {
     pub data: Vec<f32>,
 }
 
-/// A loaded model session ready for inference.
-pub trait InferenceSession {
+/// A loaded model ready for inference.
+pub trait Model {
     /// Run inference with named inputs, return named outputs.
     fn run(&mut self, inputs: &[(&str, &Tensor)]) -> Result<HashMap<String, Tensor>>;
 }
 
-/// Factory for creating sessions from ONNX model files.
-pub trait InferenceRuntime {
-    type Session: InferenceSession;
+/// Factory for loading models from ONNX files.
+pub trait Runtime {
+    type Model: Model;
 
-    fn load_model(&self, path: &Path) -> Result<Self::Session>;
+    fn load_model(&self, path: &Path) -> Result<Self::Model>;
 }

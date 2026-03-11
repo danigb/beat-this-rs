@@ -1,9 +1,7 @@
 use std::panic::AssertUnwindSafe;
 use std::path::Path;
 
-use beat_this::runtime::ort::OrtRuntime;
-use beat_this::runtime::rten::RtenRuntime;
-use beat_this::{InferenceRuntime, InferenceSession, Tensor};
+use beat_this::{Model, OrtRuntime, RtenRuntime, Runtime, Tensor};
 
 /// Check if the ORT dynamic library is available at runtime.
 /// ort with `load-dynamic` panics if the dylib isn't found, so we use catch_unwind.
@@ -39,14 +37,14 @@ fn test_cross_runtime_mel() {
 
     // ort
     let ort_runtime = OrtRuntime::default();
-    let mut ort_session = ort_runtime.load_model(model_path).unwrap();
-    let ort_outputs = ort_session.run(&[("audio_pcm", &input)]).unwrap();
+    let mut ort_model = ort_runtime.load_model(model_path).unwrap();
+    let ort_outputs = ort_model.run(&[("audio_pcm", &input)]).unwrap();
     let ort_mel = ort_outputs.get("mel_spectrogram").unwrap();
 
     // rten
     let rten_runtime = RtenRuntime;
-    let mut rten_session = rten_runtime.load_model(model_path).unwrap();
-    let rten_outputs = rten_session.run(&[("audio_pcm", &input)]).unwrap();
+    let mut rten_model = rten_runtime.load_model(model_path).unwrap();
+    let rten_outputs = rten_model.run(&[("audio_pcm", &input)]).unwrap();
     let rten_mel = rten_outputs.get("mel_spectrogram").unwrap();
 
     // Shapes must match exactly
@@ -90,13 +88,13 @@ fn test_cross_runtime_beat() {
 
     // ort
     let ort_runtime = OrtRuntime::default();
-    let mut ort_session = ort_runtime.load_model(model_path).unwrap();
-    let ort_outputs = ort_session.run(&[("mel_spectrogram", &input)]).unwrap();
+    let mut ort_model = ort_runtime.load_model(model_path).unwrap();
+    let ort_outputs = ort_model.run(&[("mel_spectrogram", &input)]).unwrap();
 
     // rten
     let rten_runtime = RtenRuntime;
-    let mut rten_session = rten_runtime.load_model(model_path).unwrap();
-    let rten_outputs = rten_session.run(&[("mel_spectrogram", &input)]).unwrap();
+    let mut rten_model = rten_runtime.load_model(model_path).unwrap();
+    let rten_outputs = rten_model.run(&[("mel_spectrogram", &input)]).unwrap();
 
     // Both should have the same output keys
     let mut ort_keys: Vec<_> = ort_outputs.keys().collect();

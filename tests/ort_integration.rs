@@ -1,8 +1,7 @@
 use std::panic::AssertUnwindSafe;
 use std::path::Path;
 
-use beat_this::runtime::ort::OrtRuntime;
-use beat_this::{InferenceRuntime, InferenceSession, Tensor};
+use beat_this::{Model, OrtRuntime, Runtime, Tensor};
 
 /// Check if the ORT dynamic library is available at runtime.
 /// ort with `load-dynamic` panics if the dylib isn't found, so we use catch_unwind.
@@ -31,7 +30,7 @@ fn test_load_mel_model() {
     }
 
     let runtime = OrtRuntime::default();
-    let _session = runtime
+    let _model = runtime
         .load_model(model_path)
         .expect("Failed to load mel model");
 }
@@ -49,7 +48,7 @@ fn test_mel_inference() {
     }
 
     let runtime = OrtRuntime::default();
-    let mut session = runtime
+    let mut model = runtime
         .load_model(model_path)
         .expect("Failed to load mel model");
 
@@ -60,7 +59,7 @@ fn test_mel_inference() {
         data: vec![0.0; num_samples],
     };
 
-    let outputs = session
+    let outputs = model
         .run(&[("audio_pcm", &input)])
         .expect("Mel inference failed");
 
@@ -86,7 +85,7 @@ fn test_load_beat_model() {
     }
 
     let runtime = OrtRuntime::default();
-    let _session = runtime
+    let _model = runtime
         .load_model(model_path)
         .expect("Failed to load beat model");
 }
@@ -104,7 +103,7 @@ fn test_beat_inference() {
     }
 
     let runtime = OrtRuntime::default();
-    let mut session = runtime
+    let mut model = runtime
         .load_model(model_path)
         .expect("Failed to load beat model");
 
@@ -116,7 +115,7 @@ fn test_beat_inference() {
         data: vec![0.0; time_frames * n_mels],
     };
 
-    let outputs = session
+    let outputs = model
         .run(&[("mel_spectrogram", &input)])
         .expect("Beat inference failed");
 

@@ -8,7 +8,7 @@ use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
 use ort::value::{DynValue, Value};
 
-use super::{InferenceRuntime, InferenceSession, Tensor};
+use super::{Model, Runtime, Tensor};
 
 /// Ort-based ONNX inference runtime.
 ///
@@ -41,11 +41,11 @@ impl OrtRuntime {
     }
 }
 
-impl InferenceRuntime for OrtRuntime {
-    type Session = OrtSession;
+impl Runtime for OrtRuntime {
+    type Model = OrtModel;
 
     #[allow(clippy::needless_match)]
-    fn load_model(&self, path: &Path) -> Result<OrtSession> {
+    fn load_model(&self, path: &Path) -> Result<OrtModel> {
         // Match is needed because GraphOptimizationLevel doesn't implement Copy or Clone.
         let optimization_level = match self.optimization_level {
             GraphOptimizationLevel::Disable => GraphOptimizationLevel::Disable,
@@ -62,23 +62,23 @@ impl InferenceRuntime for OrtRuntime {
             builder = builder.with_profiling(profile_path)?;
         }
         let session = builder.commit_from_file(path)?;
-        Ok(OrtSession { session })
+        Ok(OrtModel { session })
     }
 }
 
-/// An ort inference session wrapping `ort::Session`.
-pub struct OrtSession {
+/// An ort-backed model wrapping `ort::Session`.
+pub struct OrtModel {
     session: Session,
 }
 
-impl OrtSession {
+impl OrtModel {
     /// End profiling and flush the trace JSON file. Returns the profile file path.
     pub fn end_profiling(&mut self) -> Result<String> {
         Ok(self.session.end_profiling()?)
     }
 }
 
-impl InferenceSession for OrtSession {
+impl Model for OrtModel {
     fn run(&mut self, inputs: &[(&str, &Tensor)]) -> Result<HashMap<String, Tensor>> {
         // Convert Tensor inputs to ort DynValues
         let ort_inputs: Vec<(String, DynValue)> = inputs

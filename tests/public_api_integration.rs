@@ -1,8 +1,7 @@
 use std::panic::AssertUnwindSafe;
 use std::path::Path;
 
-use beat_this::runtime::ort::OrtRuntime;
-use beat_this::BeatThis;
+use beat_this::{BeatThis, OrtRuntime};
 
 const MEL_MODEL_PATH: &str = "references/remixatron_rust/MelSpectrogram_Ultimate.onnx";
 const BEAT_MODEL_PATH: &str = "references/remixatron_rust/BeatThis_small0.onnx";
