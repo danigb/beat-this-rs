@@ -7,18 +7,13 @@ use crate::runtime::{Model, Tensor};
 /// The model takes raw PCM audio and returns a mel spectrogram,
 /// guaranteeing exact numerical parity with the Python training pipeline.
 pub struct MelExtractor<M: Model> {
-    session: M,
+    model: M,
 }
 
 impl<M: Model> MelExtractor<M> {
     /// Wrap an already-loaded model for mel spectrogram extraction.
-    pub fn new(session: M) -> Self {
-        Self { session }
-    }
-
-    /// Get a mutable reference to the underlying model.
-    pub fn model_mut(&mut self) -> &mut M {
-        &mut self.session
+    pub fn new(model: M) -> Self {
+        Self { model }
     }
 
     /// Extract mel spectrogram from mono PCM samples at 22050 Hz.
@@ -34,7 +29,7 @@ impl<M: Model> MelExtractor<M> {
             data: samples.to_vec(),
         };
 
-        let mut outputs = self.session.run(&[("audio_pcm", &input)])?;
+        let mut outputs = self.model.run(&[("audio_pcm", &input)])?;
 
         let mel = outputs
             .remove("mel_spectrogram")
@@ -48,10 +43,4 @@ impl<M: Model> MelExtractor<M> {
 
         Ok(mel)
     }
-}
-
-/// Number of time frames in a mel spectrogram tensor.
-/// Assumes shape `[1, T, 128]`.
-pub fn num_frames(mel: &Tensor) -> usize {
-    mel.shape[1]
 }

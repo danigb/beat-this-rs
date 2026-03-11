@@ -20,7 +20,8 @@ impl Default for PeakPicker {
 
 impl PeakPicker {
     /// Create a new peak picker with the given frame rate.
-    pub fn new(fps: f32) -> Self {
+    #[cfg(test)]
+    pub(crate) fn new(fps: f32) -> Self {
         Self { fps }
     }
 

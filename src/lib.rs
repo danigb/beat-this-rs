@@ -6,15 +6,17 @@ mod postprocessing;
 mod runtime;
 
 use std::path::Path;
+use std::time::Duration;
 
 use anyhow::Result;
 
 pub use audio::{load_audio, AudioData};
-pub use inference::BeatPredictor;
-pub use mel::{num_frames as num_mel_frames, MelExtractor};
-pub use output::*;
-pub use postprocessing::PeakPicker;
+pub use output::{beat_counts, calculate_bpm};
 pub use runtime::{ort::OrtRuntime, rten::RtenRuntime, Model, Runtime, Tensor};
+
+use inference::BeatPredictor;
+use mel::MelExtractor;
+use postprocessing::PeakPicker;
 
 /// Target sample rate expected by the mel spectrogram model.
 const TARGET_SAMPLE_RATE: u32 = 22050;
@@ -40,9 +42,24 @@ pub struct BeatAnalysis {
 /// peak picker. Generic over the model type, so it works
 /// with any backend (ort, rten, tract).
 pub struct BeatThis<M: Model> {
-    pub mel: MelExtractor<M>,
-    pub predictor: BeatPredictor<M>,
-    pub peak_picker: PeakPicker,
+    mel: MelExtractor<M>,
+    predictor: BeatPredictor<M>,
+    peak_picker: PeakPicker,
+}
+
+/// Per-stage timing from [`BeatThis::analyze_audio_timed`].
+#[derive(Debug, Clone)]
+pub struct AnalysisTiming {
+    pub mel: Duration,
+    pub predict: Duration,
+    pub decode: Duration,
+}
+
+/// Analysis result with optional per-stage timing.
+#[derive(Debug, Clone)]
+pub struct TimedAnalysis {
+    pub analysis: BeatAnalysis,
+    pub timing: AnalysisTiming,
 }
 
 impl<M: Model> BeatThis<M> {
@@ -56,14 +73,33 @@ impl<M: Model> BeatThis<M> {
         mel_model_path: &Path,
         beat_model_path: &Path,
     ) -> Result<Self> {
-        let mel_session = runtime.load_model(mel_model_path)?;
-        let beat_session = runtime.load_model(beat_model_path)?;
+        let mel_model = runtime.load_model(mel_model_path)?;
+        let beat_model = runtime.load_model(beat_model_path)?;
 
         Ok(Self {
-            mel: MelExtractor::new(mel_session),
-            predictor: BeatPredictor::new(beat_session),
+            mel: MelExtractor::new(mel_model),
+            predictor: BeatPredictor::new(beat_model),
             peak_picker: PeakPicker::default(),
         })
+    }
+
+    /// Create a beat tracker from pre-built models.
+    ///
+    /// Use this when you need separate runtimes for the mel and beat models
+    /// (e.g. one with profiling enabled).
+    pub fn from_models(mel_model: M, beat_model: M) -> Self {
+        Self {
+            mel: MelExtractor::new(mel_model),
+            predictor: BeatPredictor::new(beat_model),
+            peak_picker: PeakPicker::default(),
+        }
+    }
+
+    /// Get a mutable reference to the beat prediction model.
+    ///
+    /// Useful for runtime-specific operations like ending ORT profiling.
+    pub fn beat_model_mut(&mut self) -> &mut M {
+        self.predictor.model_mut()
     }
 
     /// Run the full pipeline on raw audio samples.
@@ -71,22 +107,46 @@ impl<M: Model> BeatThis<M> {
     /// The samples are resampled to 22050 Hz if `sample_rate` differs.
     /// Input should be mono f32 PCM.
     pub fn analyze_audio(&mut self, samples: &[f32], sample_rate: u32) -> Result<BeatAnalysis> {
+        Ok(self.analyze_audio_timed(samples, sample_rate)?.analysis)
+    }
+
+    /// Run the full pipeline on raw audio samples, returning per-stage timing.
+    pub fn analyze_audio_timed(
+        &mut self,
+        samples: &[f32],
+        sample_rate: u32,
+    ) -> Result<TimedAnalysis> {
         let samples = if sample_rate != TARGET_SAMPLE_RATE {
             audio::resample(samples.to_vec(), sample_rate, TARGET_SAMPLE_RATE)?
         } else {
             samples.to_vec()
         };
 
+        let t = std::time::Instant::now();
         let mel = self.mel.extract(&samples)?;
-        let (beat_logits, downbeat_logits) = self.predictor.predict(&mel)?;
-        let (beats, downbeats) = self.peak_picker.decode(&beat_logits, &downbeat_logits)?;
+        let mel_time = t.elapsed();
 
-        Ok(BeatAnalysis {
-            beats,
-            downbeats,
-            mel,
-            beat_logits,
-            downbeat_logits,
+        let t = std::time::Instant::now();
+        let (beat_logits, downbeat_logits) = self.predictor.predict(&mel)?;
+        let predict_time = t.elapsed();
+
+        let t = std::time::Instant::now();
+        let (beats, downbeats) = self.peak_picker.decode(&beat_logits, &downbeat_logits)?;
+        let decode_time = t.elapsed();
+
+        Ok(TimedAnalysis {
+            analysis: BeatAnalysis {
+                beats,
+                downbeats,
+                mel,
+                beat_logits,
+                downbeat_logits,
+            },
+            timing: AnalysisTiming {
+                mel: mel_time,
+                predict: predict_time,
+                decode: decode_time,
+            },
         })
     }
 

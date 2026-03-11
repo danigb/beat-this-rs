@@ -1,14 +1,15 @@
+use std::f32::consts::PI;
+use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use anyhow::{bail, ensure, Context};
+use anyhow::{bail, ensure, Context, Result};
 use clap::Parser;
+use hound::{SampleFormat, WavSpec, WavWriter};
+use serde::Serialize;
 
 use beat_this::{
-    build_json_output, print_json_stdout, write_batch_json, write_beats_file, write_click_track,
-    write_json_file, write_mel_npy, write_mixed_audio, BatchFileEntry, BatchSummary,
-    BatchSummaryOutput, BeatAnalysis, Model, OrtRuntime, RtenRuntime,
-    Runtime as _,
+    beat_counts, calculate_bpm, BeatAnalysis, Model, OrtRuntime, RtenRuntime, Runtime as _,
 };
 
 const DEFAULT_MODEL_PATH: &str = "models/beat_this.onnx";
@@ -100,7 +101,7 @@ fn is_audio_extension(path: &Path) -> bool {
 }
 
 /// Resolve the input argument into a single file or batch of files.
-fn resolve_input(input: &str, recursive: bool) -> anyhow::Result<InputMode> {
+fn resolve_input(input: &str, recursive: bool) -> Result<InputMode> {
     let path = Path::new(input);
 
     // 1. Existing file
@@ -144,14 +145,14 @@ fn resolve_input(input: &str, recursive: bool) -> anyhow::Result<InputMode> {
 }
 
 /// Find audio files in a directory, optionally recursing into subdirectories.
-fn find_audio_files(dir: &Path, recursive: bool) -> anyhow::Result<Vec<PathBuf>> {
+fn find_audio_files(dir: &Path, recursive: bool) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
     collect_audio_files(dir, recursive, &mut files)?;
     files.sort();
     Ok(files)
 }
 
-fn collect_audio_files(dir: &Path, recursive: bool, out: &mut Vec<PathBuf>) -> anyhow::Result<()> {
+fn collect_audio_files(dir: &Path, recursive: bool, out: &mut Vec<PathBuf>) -> Result<()> {
     let entries = std::fs::read_dir(dir)
         .with_context(|| format!("Cannot read directory: {}", dir.display()))?;
 
@@ -164,6 +165,286 @@ fn collect_audio_files(dir: &Path, recursive: bool, out: &mut Vec<PathBuf>) -> a
             out.push(path);
         }
     }
+    Ok(())
+}
+
+// --- Output writing ---
+
+// Click synthesis constants
+const CLICK_SAMPLE_RATE: u32 = 44100;
+const CLICK_DURATION: f32 = 0.1; // 100ms
+const CLICK_ATTACK: f32 = 0.01; // 10ms
+const CLICK_DECAY: f32 = 0.05; // 50ms
+const DOWNBEAT_FREQ: f32 = 880.0; // A5
+const BEAT_FREQ: f32 = 440.0; // A4
+
+// Mixing gains
+const ORIGINAL_GAIN: f32 = 0.7;
+const CLICK_GAIN: f32 = 0.3;
+
+/// Write a `.beats` file: tab-separated `time\tbeat_count` per line.
+fn write_beats_file(path: &Path, analysis: &BeatAnalysis) -> Result<()> {
+    use std::io::Write;
+
+    let counts = beat_counts(analysis);
+    let file = std::fs::File::create(path)?;
+    let mut writer = BufWriter::new(file);
+
+    for (&time, &count) in analysis.beats.iter().zip(counts.iter()) {
+        writeln!(writer, "{:.3}\t{}", time, count)?;
+    }
+
+    Ok(())
+}
+
+/// Generate a click-track WAV file.
+fn write_click_track(path: &Path, analysis: &BeatAnalysis) -> Result<()> {
+    ensure!(
+        !analysis.beats.is_empty(),
+        "No beats to generate click track"
+    );
+
+    let counts = beat_counts(analysis);
+    let total_duration = analysis.beats.last().unwrap() + CLICK_DURATION + CLICK_DECAY;
+    let total_samples = (total_duration * CLICK_SAMPLE_RATE as f32) as usize;
+    let mut buffer = vec![0.0f32; total_samples];
+
+    for (&beat_time, &count) in analysis.beats.iter().zip(counts.iter()) {
+        let freq = if count == 1 { DOWNBEAT_FREQ } else { BEAT_FREQ };
+        let click = generate_sine_click(freq, CLICK_SAMPLE_RATE);
+        let start = (beat_time * CLICK_SAMPLE_RATE as f32) as usize;
+        mix_into(&mut buffer, &click, start);
+    }
+
+    normalize(&mut buffer);
+    write_wav(path, &buffer, CLICK_SAMPLE_RATE)
+}
+
+/// Generate a mixed WAV file: original audio + click track layered on top.
+fn write_mixed_audio(
+    path: &Path,
+    analysis: &BeatAnalysis,
+    original_samples: &[f32],
+    sample_rate: u32,
+) -> Result<()> {
+    ensure!(
+        !analysis.beats.is_empty(),
+        "No beats to generate mixed audio"
+    );
+
+    let counts = beat_counts(analysis);
+    let original_duration = original_samples.len() as f32 / sample_rate as f32;
+    let last_beat_end = analysis.beats.last().unwrap() + CLICK_DURATION + CLICK_DECAY;
+    let total_duration = original_duration.max(last_beat_end);
+    let total_samples = (total_duration * sample_rate as f32) as usize;
+
+    let mut buffer = vec![0.0f32; total_samples];
+
+    for (i, &sample) in original_samples.iter().enumerate() {
+        if i < buffer.len() {
+            buffer[i] = sample * ORIGINAL_GAIN;
+        }
+    }
+
+    for (&beat_time, &count) in analysis.beats.iter().zip(counts.iter()) {
+        let freq = if count == 1 { DOWNBEAT_FREQ } else { BEAT_FREQ };
+        let click = generate_sine_click(freq, sample_rate);
+        let start = (beat_time * sample_rate as f32) as usize;
+        mix_into_scaled(&mut buffer, &click, start, CLICK_GAIN);
+    }
+
+    normalize(&mut buffer);
+    write_wav(path, &buffer, sample_rate)
+}
+
+/// A single beat entry for JSON output.
+#[derive(Serialize)]
+struct BeatEntry {
+    time: f32,
+    beat: i32,
+    downbeat: bool,
+}
+
+/// Top-level JSON output structure.
+#[derive(Serialize)]
+struct JsonOutput {
+    beats: Vec<BeatEntry>,
+    downbeats: Vec<f32>,
+    bpm: Option<f32>,
+}
+
+fn build_json_output(analysis: &BeatAnalysis) -> JsonOutput {
+    let counts = beat_counts(analysis);
+    let beats = analysis
+        .beats
+        .iter()
+        .zip(counts.iter())
+        .map(|(&time, &beat)| BeatEntry {
+            time,
+            beat,
+            downbeat: beat == 1,
+        })
+        .collect();
+
+    JsonOutput {
+        beats,
+        downbeats: analysis.downbeats.clone(),
+        bpm: calculate_bpm(analysis),
+    }
+}
+
+fn print_json_stdout(analysis: &BeatAnalysis) -> Result<()> {
+    let output = build_json_output(analysis);
+    let json = serde_json::to_string_pretty(&output)?;
+    println!("{}", json);
+    Ok(())
+}
+
+fn write_json_file(path: &Path, analysis: &BeatAnalysis) -> Result<()> {
+    let output = build_json_output(analysis);
+    let file = std::fs::File::create(path)?;
+    let writer = BufWriter::new(file);
+    serde_json::to_writer_pretty(writer, &output)?;
+    Ok(())
+}
+
+/// Write the mel spectrogram as a numpy `.npy` file (v1.0 format).
+fn write_mel_npy(path: &Path, analysis: &BeatAnalysis) -> Result<()> {
+    use std::io::Write;
+
+    let mel = &analysis.mel;
+    let t_frames = mel.shape[1];
+    let n_mels = mel.shape[2];
+
+    let dict = format!(
+        "{{'descr': '<f4', 'fortran_order': False, 'shape': ({}, {}), }}",
+        t_frames, n_mels
+    );
+
+    let base = 10 + dict.len() + 1;
+    let padding = (64 - base % 64) % 64;
+    let header_len = (dict.len() + padding + 1) as u16;
+
+    let file = std::fs::File::create(path)?;
+    let mut f = BufWriter::new(file);
+
+    f.write_all(b"\x93NUMPY")?;
+    f.write_all(&[1u8, 0u8])?;
+    f.write_all(&header_len.to_le_bytes())?;
+    f.write_all(dict.as_bytes())?;
+    for _ in 0..padding {
+        f.write_all(b" ")?;
+    }
+    f.write_all(b"\n")?;
+
+    for &v in &mel.data[..t_frames * n_mels] {
+        f.write_all(&v.to_le_bytes())?;
+    }
+
+    Ok(())
+}
+
+/// Per-file entry in batch summary JSON.
+#[derive(Serialize)]
+struct BatchFileEntry {
+    input: String,
+    duration_secs: f32,
+    processing_time_secs: f32,
+    outputs: Vec<String>,
+}
+
+/// Aggregate metrics for batch processing.
+#[derive(Serialize)]
+struct BatchSummary {
+    total_files: usize,
+    failed_files: usize,
+    total_duration_secs: f32,
+    total_processing_time_secs: f32,
+    model_loading_time_secs: f32,
+    realtime_factor: f32,
+}
+
+/// Top-level batch summary JSON.
+#[derive(Serialize)]
+struct BatchSummaryOutput {
+    files: Vec<BatchFileEntry>,
+    summary: BatchSummary,
+}
+
+fn write_batch_json(path: &Path, output: &BatchSummaryOutput) -> Result<()> {
+    let file = std::fs::File::create(path)?;
+    let writer = BufWriter::new(file);
+    serde_json::to_writer_pretty(writer, output)?;
+    Ok(())
+}
+
+fn generate_sine_click(frequency: f32, sample_rate: u32) -> Vec<f32> {
+    let num_samples = (CLICK_DURATION * sample_rate as f32) as usize;
+    let attack_samples = (CLICK_ATTACK * sample_rate as f32) as usize;
+    let decay_samples = (CLICK_DECAY * sample_rate as f32) as usize;
+
+    let mut waveform = Vec::with_capacity(num_samples);
+
+    for i in 0..num_samples {
+        let t = i as f32 / sample_rate as f32;
+        let amplitude = if i < attack_samples {
+            i as f32 / attack_samples as f32
+        } else if i > num_samples - decay_samples {
+            (num_samples - i) as f32 / decay_samples as f32
+        } else {
+            1.0
+        };
+        waveform.push(amplitude * (2.0 * PI * frequency * t).sin());
+    }
+
+    waveform
+}
+
+fn mix_into(dst: &mut [f32], src: &[f32], offset: usize) {
+    for (i, &sample) in src.iter().enumerate() {
+        let pos = offset + i;
+        if pos < dst.len() {
+            dst[pos] += sample;
+        }
+    }
+}
+
+fn mix_into_scaled(dst: &mut [f32], src: &[f32], offset: usize, gain: f32) {
+    for (i, &sample) in src.iter().enumerate() {
+        let pos = offset + i;
+        if pos < dst.len() {
+            dst[pos] += sample * gain;
+        }
+    }
+}
+
+fn normalize(buffer: &mut [f32]) {
+    let max_val = buffer.iter().fold(0.0f32, |m, &s| m.max(s.abs()));
+    if max_val > 1.0 {
+        let scale = 1.0 / max_val;
+        for sample in buffer.iter_mut() {
+            *sample *= scale;
+        }
+    }
+}
+
+fn write_wav(path: &Path, samples: &[f32], sample_rate: u32) -> Result<()> {
+    let spec = WavSpec {
+        channels: 1,
+        sample_rate,
+        bits_per_sample: 32,
+        sample_format: SampleFormat::Float,
+    };
+
+    let file = std::fs::File::create(path)?;
+    let buf = BufWriter::new(file);
+    let mut writer = WavWriter::new(buf, spec)?;
+
+    for &sample in samples {
+        writer.write_sample(sample)?;
+    }
+
+    writer.finalize()?;
     Ok(())
 }
 
@@ -223,10 +504,6 @@ impl OutputFlags {
 }
 
 /// Resolve an output file path from a flag value and input file path.
-///
-/// - Flag not set (`None`) → `None`
-/// - Flag set without value (`Some("")`) → derive from input path with given extension
-/// - Flag set with value (`Some("file.json")`) → use as-is
 fn resolve_output_path(input: &Path, flag: &Option<String>, ext: &str) -> Option<PathBuf> {
     let value = flag.as_ref()?;
     if value.is_empty() {
@@ -237,12 +514,11 @@ fn resolve_output_path(input: &Path, flag: &Option<String>, ext: &str) -> Option
 }
 
 /// Write a file if it doesn't already exist (or --overwrite is set).
-/// Returns `true` if the file was written, `false` if skipped.
 fn write_if_needed(
     path: &Path,
     overwrite: bool,
-    write_fn: impl FnOnce(&Path) -> anyhow::Result<()>,
-) -> anyhow::Result<bool> {
+    write_fn: impl FnOnce(&Path) -> Result<()>,
+) -> Result<bool> {
     if path.exists() && !overwrite {
         eprintln!(
             "Skipped {} (already exists, use --overwrite)",
@@ -259,7 +535,7 @@ fn write_outputs(
     input: &Path,
     analysis: &BeatAnalysis,
     flags: &OutputFlags,
-) -> anyhow::Result<Vec<String>> {
+) -> Result<Vec<String>> {
     let mut written = Vec::new();
 
     if let Some(path) = resolve_output_path(input, &flags.json, "json") {
@@ -281,7 +557,7 @@ fn write_outputs(
     }
 
     if let Some(path) = resolve_output_path(input, &flags.mix, "mix.wav") {
-        let write_mix = |p: &Path| -> anyhow::Result<()> {
+        let write_mix = |p: &Path| -> Result<()> {
             let audio = beat_this::load_audio(input, 44100)?;
             write_mixed_audio(p, analysis, &audio.samples, audio.sample_rate)?;
             Ok(())
@@ -309,11 +585,11 @@ struct FileResult {
 }
 
 /// Process a single audio file through the pipeline, returning analysis and duration.
-fn process_single_file<S: Model>(
-    bt: &mut beat_this::BeatThis<S>,
+fn process_single_file<M: Model>(
+    bt: &mut beat_this::BeatThis<M>,
     path: &Path,
     verbose: bool,
-) -> anyhow::Result<FileResult> {
+) -> Result<FileResult> {
     let t = Instant::now();
     let audio = beat_this::load_audio(path, 22050)?;
     let duration_secs = audio.samples.len() as f32 / audio.sample_rate as f32;
@@ -326,49 +602,35 @@ fn process_single_file<S: Model>(
         );
     }
 
-    let t = Instant::now();
-    let mel = bt.mel.extract(&audio.samples)?;
+    let timed = bt.analyze_audio_timed(&audio.samples, audio.sample_rate)?;
     if verbose {
         eprintln!(
             "[timing] Mel spectrogram: {:.3}s ({} frames)",
-            t.elapsed().as_secs_f64(),
-            mel.shape[1]
+            timed.timing.mel.as_secs_f64(),
+            timed.analysis.mel.shape[1]
         );
-    }
-
-    let t = Instant::now();
-    let (beat_logits, downbeat_logits) = bt.predictor.predict(&mel)?;
-    if verbose {
-        eprintln!("[timing] Beat prediction: {:.3}s", t.elapsed().as_secs_f64());
-    }
-
-    let t = Instant::now();
-    let (beats, downbeats) = bt.peak_picker.decode(&beat_logits, &downbeat_logits)?;
-    if verbose {
+        eprintln!(
+            "[timing] Beat prediction: {:.3}s",
+            timed.timing.predict.as_secs_f64()
+        );
         eprintln!(
             "[timing] Post-processing: {:.3}s",
-            t.elapsed().as_secs_f64()
+            timed.timing.decode.as_secs_f64()
         );
     }
 
     Ok(FileResult {
-        analysis: BeatAnalysis {
-            beats,
-            downbeats,
-            mel,
-            beat_logits,
-            downbeat_logits,
-        },
+        analysis: timed.analysis,
         duration_secs,
     })
 }
 
-/// Run the full single-file pipeline (audio → mel → inference → postprocessing → output).
-fn run_pipeline<S: Model>(
-    bt: &mut beat_this::BeatThis<S>,
+/// Run the full single-file pipeline (audio → mel → prediction → decode → output).
+fn run_pipeline<M: Model>(
+    bt: &mut beat_this::BeatThis<M>,
     cli: &Cli,
     input_path: &Path,
-) -> anyhow::Result<()> {
+) -> Result<()> {
     eprintln!("Processing {}...", input_path.display());
 
     let file_result = process_single_file(bt, input_path, cli.verbose)?;
@@ -397,13 +659,13 @@ fn run_pipeline<S: Model>(
 }
 
 /// Run batch processing over a list of audio files.
-fn run_batch<S: Model>(
-    bt: &mut beat_this::BeatThis<S>,
+fn run_batch<M: Model>(
+    bt: &mut beat_this::BeatThis<M>,
     files: &[PathBuf],
     summary_dir: &Path,
     cli: &Cli,
     model_loading_secs: f32,
-) -> anyhow::Result<()> {
+) -> Result<()> {
     eprintln!("Processing {} files...", files.len());
 
     let flags = OutputFlags::for_batch(cli);
@@ -495,7 +757,7 @@ fn run_batch<S: Model>(
     Ok(())
 }
 
-fn main() -> anyhow::Result<()> {
+fn main() -> Result<()> {
     let cli = Cli::parse();
 
     // Resolve input into single file or batch
@@ -536,24 +798,20 @@ fn main() -> anyhow::Result<()> {
             // Use a separate runtime for the beat model when profiling
             let beat_runtime = if let Some(ref prefix) = cli.profile {
                 OrtRuntime {
-                    profiling_path: Some(std::path::PathBuf::from(prefix)),
+                    profiling_path: Some(PathBuf::from(prefix)),
                     ..Default::default()
                 }
             } else {
                 OrtRuntime::default()
             };
-            let mel_session = runtime.load_model(&mel_path)
+            let mel_model = runtime.load_model(&mel_path)
                 .context("Failed to initialize ort runtime. Is the ONNX Runtime library installed?\n  \
                     macOS: brew install onnxruntime\n  \
                     Or use --runtime rten (default) for a pure-Rust runtime with no external dependencies.")?;
-            let beat_session = beat_runtime
+            let beat_model = beat_runtime
                 .load_model(&beat_path)
                 .context("Failed to load beat model with ort runtime.")?;
-            let mut bt = beat_this::BeatThis {
-                mel: beat_this::MelExtractor::new(mel_session),
-                predictor: beat_this::BeatPredictor::new(beat_session),
-                peak_picker: beat_this::PeakPicker::default(),
-            };
+            let mut bt = beat_this::BeatThis::from_models(mel_model, beat_model);
             let model_loading_secs = t.elapsed().as_secs_f64() as f32;
             if cli.verbose {
                 eprintln!("[timing] Model loading: {:.3}s", model_loading_secs);
@@ -568,7 +826,7 @@ fn main() -> anyhow::Result<()> {
 
             // End ORT profiling
             if cli.profile.is_some() {
-                if let Ok(path) = bt.predictor.model_mut().end_profiling() {
+                if let Ok(path) = bt.beat_model_mut().end_profiling() {
                     eprintln!("[profile] Beat model trace written to: {}", path);
                 }
             }

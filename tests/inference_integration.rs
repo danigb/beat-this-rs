@@ -39,7 +39,9 @@ fn test_beat_prediction_short() {
 
     // 2 seconds of silence — produces a short mel spectrogram (~100 frames)
     let samples = vec![0.0f32; 22050 * 2];
-    let result = bt.analyze_audio(&samples, 22050).expect("analyze_audio failed");
+    let result = bt
+        .analyze_audio(&samples, 22050)
+        .expect("analyze_audio failed");
 
     // Logits should match mel frame count
     assert_eq!(result.beat_logits.len(), result.mel.shape[1]);
@@ -64,8 +66,16 @@ fn test_beat_prediction_short() {
     eprintln!(
         "Short prediction: {} frames → beat range [{:.2}, {:.2}]",
         result.mel.shape[1],
-        result.beat_logits.iter().cloned().fold(f32::INFINITY, f32::min),
-        result.beat_logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max),
+        result
+            .beat_logits
+            .iter()
+            .cloned()
+            .fold(f32::INFINITY, f32::min),
+        result
+            .beat_logits
+            .iter()
+            .cloned()
+            .fold(f32::NEG_INFINITY, f32::max),
     );
 }
 
@@ -86,7 +96,9 @@ fn test_beat_prediction_long() {
 
     // 60 seconds of silence — produces ~3000 frames (needs multiple chunks)
     let samples = vec![0.0f32; 22050 * 60];
-    let result = bt.analyze_audio(&samples, 22050).expect("analyze_audio failed");
+    let result = bt
+        .analyze_audio(&samples, 22050)
+        .expect("analyze_audio failed");
 
     let frames = result.mel.shape[1];
     assert_eq!(result.beat_logits.len(), frames);
@@ -106,8 +118,16 @@ fn test_beat_prediction_long() {
 
     eprintln!(
         "Long prediction: {frames} frames → beat range [{:.2}, {:.2}]",
-        result.beat_logits.iter().cloned().fold(f32::INFINITY, f32::min),
-        result.beat_logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max),
+        result
+            .beat_logits
+            .iter()
+            .cloned()
+            .fold(f32::INFINITY, f32::min),
+        result
+            .beat_logits
+            .iter()
+            .cloned()
+            .fold(f32::NEG_INFINITY, f32::max),
     );
 }
 

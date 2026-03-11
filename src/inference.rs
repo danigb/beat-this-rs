@@ -16,18 +16,18 @@ const STRIDE: usize = CHUNK_SIZE - 2 * BORDER_SIZE;
 /// the model, and the results are aggregated using "keep_first" mode
 /// (earlier chunks take priority in overlapping regions).
 pub struct BeatPredictor<M: Model> {
-    session: M,
+    model: M,
 }
 
 impl<M: Model> BeatPredictor<M> {
     /// Wrap an already-loaded model for beat prediction.
-    pub fn new(session: M) -> Self {
-        Self { session }
+    pub fn new(model: M) -> Self {
+        Self { model }
     }
 
     /// Get a mutable reference to the underlying model.
     pub fn model_mut(&mut self) -> &mut M {
-        &mut self.session
+        &mut self.model
     }
 
     /// Predict beats from a full mel spectrogram.
@@ -54,7 +54,7 @@ impl<M: Model> BeatPredictor<M> {
         for &start in starts.iter().rev() {
             let chunk = extract_chunk(mel, start);
 
-            let mut outputs = self.session.run(&[("spectrogram", &chunk)])?;
+            let mut outputs = self.model.run(&[("spectrogram", &chunk)])?;
 
             let beat = extract_output(&mut outputs, "beat", "beat_logits")?;
             let downbeat = extract_output(&mut outputs, "downbeat", "downbeat_logits")?;

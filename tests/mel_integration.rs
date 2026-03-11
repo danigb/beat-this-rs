@@ -131,5 +131,8 @@ fn test_mel_with_real_audio() {
     );
 
     let frames = mel.shape[1];
-    eprintln!("Real audio mel: {:?} ({frames} frames, max={max_val:.2})", mel.shape);
+    eprintln!(
+        "Real audio mel: {:?} ({frames} frames, max={max_val:.2})",
+        mel.shape
+    );
 }
