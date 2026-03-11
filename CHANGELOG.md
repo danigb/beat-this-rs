@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.3.0] - 2026-03-11
+
+### Changed
+
+- Simplified public API: internal modules (`inference`, `mel`, `postprocessing`, `output`) are now private
+- Renamed core types: `InferenceRuntime` → `Runtime`, `InferenceSession` → `Model`, `BeatInference` → `BeatPredictor`, `MelProcessor` → `MelExtractor`, `PostProcessor` → `PeakPicker`
+- Renamed methods: `process` → `predict` (BeatPredictor), `process` → `extract` (MelExtractor), `process` → `decode` (PeakPicker)
+- Re-exported `beat_counts` and `calculate_bpm` from the crate root
+
+### Added
+
+- `BeatThis::from_models` constructor for building from pre-loaded models
+- `BeatThis::beat_model_mut` accessor for runtime-specific operations (e.g. ORT profiling)
+- `analyze_audio_timed` method with per-stage timing via `TimedAnalysis` and `AnalysisTiming`
+
+### Fixed
+
+- Audio chunk padding: correctly handle last chunk border trimming instead of always using full `CHUNK_SIZE`, fixing potential out-of-bounds access on short audio
+
 ## [0.2.0] - 2026-03-05
 
 ### Changed
