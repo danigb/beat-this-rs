@@ -8,7 +8,7 @@ use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
 use ort::value::{DynValue, Value};
 
-use super::{InferenceRuntime, InferenceSession, Tensor};
+use super::{Model, Runtime, Tensor};
 
 /// Ort-based ONNX inference runtime.
 ///
@@ -41,8 +41,8 @@ impl OrtRuntime {
     }
 }
 
-impl InferenceRuntime for OrtRuntime {
-    type Session = OrtSession;
+impl Runtime for OrtRuntime {
+    type Model = OrtSession;
 
     #[allow(clippy::needless_match)]
     fn load_model(&self, path: &Path) -> Result<OrtSession> {
@@ -78,7 +78,7 @@ impl OrtSession {
     }
 }
 
-impl InferenceSession for OrtSession {
+impl Model for OrtSession {
     fn run(&mut self, inputs: &[(&str, &Tensor)]) -> Result<HashMap<String, Tensor>> {
         // Convert Tensor inputs to ort DynValues
         let ort_inputs: Vec<(String, DynValue)> = inputs

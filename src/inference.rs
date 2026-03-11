@@ -1,6 +1,6 @@
 use anyhow::{anyhow, ensure, Result};
 
-use crate::runtime::{InferenceSession, Tensor};
+use crate::runtime::{Model, Tensor};
 
 /// Frames per chunk (30 seconds at 50 fps).
 const CHUNK_SIZE: usize = 1500;
@@ -9,32 +9,32 @@ const BORDER_SIZE: usize = 6;
 /// Effective step between chunks.
 const STRIDE: usize = CHUNK_SIZE - 2 * BORDER_SIZE;
 
-/// Runs chunked beat/downbeat inference on a mel spectrogram.
+/// Runs chunked beat/downbeat prediction on a mel spectrogram.
 ///
 /// The beat model was trained on 1500-frame segments. For longer audio,
 /// the spectrogram is split into overlapping chunks, each run through
 /// the model, and the results are aggregated using "keep_first" mode
 /// (earlier chunks take priority in overlapping regions).
-pub struct BeatInference<S: InferenceSession> {
-    session: S,
+pub struct BeatPredictor<M: Model> {
+    session: M,
 }
 
-impl<S: InferenceSession> BeatInference<S> {
-    /// Wrap an already-loaded inference session for the beat model.
-    pub fn new(session: S) -> Self {
+impl<M: Model> BeatPredictor<M> {
+    /// Wrap an already-loaded model for beat prediction.
+    pub fn new(session: M) -> Self {
         Self { session }
     }
 
-    /// Get a mutable reference to the underlying session.
-    pub fn session_mut(&mut self) -> &mut S {
+    /// Get a mutable reference to the underlying model.
+    pub fn model_mut(&mut self) -> &mut M {
         &mut self.session
     }
 
-    /// Run inference on a full mel spectrogram.
+    /// Predict beats from a full mel spectrogram.
     ///
     /// Input: mel spectrogram `Tensor` with shape `[1, T, 128]`.
     /// Returns: `(beat_logits, downbeat_logits)` — each `Vec<f32>` of length T.
-    pub fn process(&mut self, mel: &Tensor) -> Result<(Vec<f32>, Vec<f32>)> {
+    pub fn predict(&mut self, mel: &Tensor) -> Result<(Vec<f32>, Vec<f32>)> {
         ensure!(
             mel.shape.len() == 3 && mel.shape[0] == 1 && mel.shape[2] == 128,
             "Expected mel shape [1, T, 128], got {:?}",

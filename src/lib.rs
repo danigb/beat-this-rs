@@ -10,11 +10,11 @@ use std::path::Path;
 use anyhow::Result;
 
 pub use audio::{load_audio, AudioData};
-pub use inference::BeatInference;
-pub use mel::{num_frames as num_mel_frames, MelProcessor};
+pub use inference::BeatPredictor;
+pub use mel::{num_frames as num_mel_frames, MelExtractor};
 pub use output::*;
-pub use postprocessing::PostProcessor;
-pub use runtime::{ort::OrtRuntime, rten::RtenRuntime, InferenceRuntime, InferenceSession, Tensor};
+pub use postprocessing::PeakPicker;
+pub use runtime::{ort::OrtRuntime, rten::RtenRuntime, Model, Runtime, Tensor};
 
 /// Target sample rate expected by the mel spectrogram model.
 const TARGET_SAMPLE_RATE: u32 = 22050;
@@ -36,22 +36,22 @@ pub struct BeatAnalysis {
 
 /// High-level beat tracker composing the full pipeline.
 ///
-/// Owns the mel spectrogram model, the beat inference model, and the
-/// post-processor. Generic over the inference session type, so it works
+/// Owns the mel spectrogram model, the beat prediction model, and the
+/// peak picker. Generic over the model type, so it works
 /// with any backend (ort, rten, tract).
-pub struct BeatThis<S: InferenceSession> {
-    pub mel: MelProcessor<S>,
-    pub inference: BeatInference<S>,
-    pub post: PostProcessor,
+pub struct BeatThis<M: Model> {
+    pub mel: MelExtractor<M>,
+    pub predictor: BeatPredictor<M>,
+    pub peak_picker: PeakPicker,
 }
 
-impl<S: InferenceSession> BeatThis<S> {
+impl<M: Model> BeatThis<M> {
     /// Create a new beat tracker by loading both ONNX models via the given runtime.
     ///
-    /// - `runtime`: any `InferenceRuntime` (e.g. `OrtRuntime::default()`)
+    /// - `runtime`: any `Runtime` (e.g. `OrtRuntime::default()`)
     /// - `mel_model_path`: path to the mel spectrogram ONNX model
     /// - `beat_model_path`: path to the beat tracking ONNX model
-    pub fn new<R: InferenceRuntime<Session = S>>(
+    pub fn new<R: Runtime<Model = M>>(
         runtime: &R,
         mel_model_path: &Path,
         beat_model_path: &Path,
@@ -60,9 +60,9 @@ impl<S: InferenceSession> BeatThis<S> {
         let beat_session = runtime.load_model(beat_model_path)?;
 
         Ok(Self {
-            mel: MelProcessor::new(mel_session),
-            inference: BeatInference::new(beat_session),
-            post: PostProcessor::default(),
+            mel: MelExtractor::new(mel_session),
+            predictor: BeatPredictor::new(beat_session),
+            peak_picker: PeakPicker::default(),
         })
     }
 
@@ -77,9 +77,9 @@ impl<S: InferenceSession> BeatThis<S> {
             samples.to_vec()
         };
 
-        let mel = self.mel.process(&samples)?;
-        let (beat_logits, downbeat_logits) = self.inference.process(&mel)?;
-        let (beats, downbeats) = self.post.process(&beat_logits, &downbeat_logits)?;
+        let mel = self.mel.extract(&samples)?;
+        let (beat_logits, downbeat_logits) = self.predictor.predict(&mel)?;
+        let (beats, downbeats) = self.peak_picker.decode(&beat_logits, &downbeat_logits)?;
 
         Ok(BeatAnalysis {
             beats,
@@ -93,7 +93,7 @@ impl<S: InferenceSession> BeatThis<S> {
     /// Run the full pipeline on an audio file.
     ///
     /// Loads the file, resamples to 22050 Hz mono, computes mel spectrogram,
-    /// runs beat inference, and post-processes into beat/downbeat timestamps.
+    /// runs beat prediction, and decodes into beat/downbeat timestamps.
     pub fn analyze_file(&mut self, path: &Path) -> Result<BeatAnalysis> {
         let audio = load_audio(path, TARGET_SAMPLE_RATE)?;
         self.analyze_audio(&audio.samples, audio.sample_rate)

@@ -1,7 +1,7 @@
 use std::panic::AssertUnwindSafe;
 use std::path::Path;
 
-use beat_this::{num_mel_frames, InferenceRuntime, MelProcessor, OrtRuntime};
+use beat_this::{num_mel_frames, MelExtractor, OrtRuntime, Runtime};
 
 const MEL_MODEL_PATH: &str = "references/remixatron_rust/MelSpectrogram_Ultimate.onnx";
 const TEST_AUDIO_PATH: &str = "test_files/It Don't Mean A Thing - Kings of Swing.mp3";
@@ -16,7 +16,7 @@ fn ort_is_available() -> bool {
     .is_ok()
 }
 
-fn load_mel_session() -> Option<impl beat_this::InferenceSession> {
+fn load_mel_session() -> Option<impl beat_this::Model> {
     if !ort_is_available() {
         eprintln!("Skipping test: ORT runtime not available");
         return None;
@@ -35,17 +35,17 @@ fn load_mel_session() -> Option<impl beat_this::InferenceSession> {
 }
 
 #[test]
-fn test_mel_processor_basic() {
+fn test_mel_extractor_basic() {
     let session = match load_mel_session() {
         Some(s) => s,
         None => return,
     };
 
-    let mut processor = MelProcessor::new(session);
+    let mut extractor = MelExtractor::new(session);
 
     // 1 second of silence at 22050 Hz
     let samples = vec![0.0f32; 22050];
-    let mel = processor.process(&samples).expect("Mel processing failed");
+    let mel = extractor.extract(&samples).expect("Mel extraction failed");
 
     assert_eq!(mel.shape.len(), 3, "Expected 3D output");
     assert_eq!(mel.shape[0], 1, "Batch size should be 1");
@@ -68,22 +68,22 @@ fn test_mel_processor_basic() {
 }
 
 #[test]
-fn test_mel_processor_duration_scaling() {
+fn test_mel_extractor_duration_scaling() {
     let session = match load_mel_session() {
         Some(s) => s,
         None => return,
     };
 
-    let mut processor = MelProcessor::new(session);
+    let mut extractor = MelExtractor::new(session);
 
     // 2 seconds
     let samples_2s = vec![0.0f32; 22050 * 2];
-    let mel_2s = processor.process(&samples_2s).expect("2s mel failed");
+    let mel_2s = extractor.extract(&samples_2s).expect("2s mel failed");
     let frames_2s = num_mel_frames(&mel_2s);
 
     // 5 seconds
     let samples_5s = vec![0.0f32; 22050 * 5];
-    let mel_5s = processor.process(&samples_5s).expect("5s mel failed");
+    let mel_5s = extractor.extract(&samples_5s).expect("5s mel failed");
     let frames_5s = num_mel_frames(&mel_5s);
 
     // Frame count should scale linearly: ratio ≈ 2.5
@@ -97,7 +97,7 @@ fn test_mel_processor_duration_scaling() {
 }
 
 #[test]
-fn test_mel_processor_with_audio() {
+fn test_mel_extractor_with_audio() {
     let session = match load_mel_session() {
         Some(s) => s,
         None => return,
@@ -110,10 +110,10 @@ fn test_mel_processor_with_audio() {
     }
 
     let audio = beat_this::load_audio(audio_path, 22050).expect("Failed to load audio");
-    let mut processor = MelProcessor::new(session);
-    let mel = processor
-        .process(&audio.samples)
-        .expect("Mel processing failed");
+    let mut extractor = MelExtractor::new(session);
+    let mel = extractor
+        .extract(&audio.samples)
+        .expect("Mel extraction failed");
 
     assert_eq!(mel.shape[0], 1);
     assert_eq!(mel.shape[2], 128);

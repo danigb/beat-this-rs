@@ -1,34 +1,34 @@
 use anyhow::{anyhow, ensure, Result};
 
-use crate::runtime::{InferenceSession, Tensor};
+use crate::runtime::{Model, Tensor};
 
 /// Computes log-mel spectrograms via an ONNX model.
 ///
 /// The model takes raw PCM audio and returns a mel spectrogram,
 /// guaranteeing exact numerical parity with the Python training pipeline.
-pub struct MelProcessor<S: InferenceSession> {
-    session: S,
+pub struct MelExtractor<M: Model> {
+    session: M,
 }
 
-impl<S: InferenceSession> MelProcessor<S> {
-    /// Wrap an already-loaded inference session for the mel spectrogram model.
-    pub fn new(session: S) -> Self {
+impl<M: Model> MelExtractor<M> {
+    /// Wrap an already-loaded model for mel spectrogram extraction.
+    pub fn new(session: M) -> Self {
         Self { session }
     }
 
-    /// Get a mutable reference to the underlying session.
-    pub fn session_mut(&mut self) -> &mut S {
+    /// Get a mutable reference to the underlying model.
+    pub fn model_mut(&mut self) -> &mut M {
         &mut self.session
     }
 
-    /// Compute mel spectrogram from mono PCM samples at 22050 Hz.
+    /// Extract mel spectrogram from mono PCM samples at 22050 Hz.
     ///
     /// Input: mono f32 samples (any length).
     /// Output: Tensor with shape `[1, time_frames, 128]`.
     ///
     /// The number of time frames depends on sample count:
     /// `time_frames ≈ samples.len() / 441` (hop_length=441 for 50 fps at 22050 Hz).
-    pub fn process(&mut self, samples: &[f32]) -> Result<Tensor> {
+    pub fn extract(&mut self, samples: &[f32]) -> Result<Tensor> {
         let input = Tensor {
             shape: vec![1, samples.len()],
             data: samples.to_vec(),

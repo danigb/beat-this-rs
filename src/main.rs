@@ -7,7 +7,8 @@ use clap::Parser;
 use beat_this::{
     build_json_output, print_json_stdout, write_batch_json, write_beats_file, write_click_track,
     write_json_file, write_mel_npy, write_mixed_audio, BatchFileEntry, BatchSummary,
-    BatchSummaryOutput, BeatAnalysis, InferenceRuntime, InferenceSession, OrtRuntime, RtenRuntime,
+    BatchSummaryOutput, BeatAnalysis, Model, OrtRuntime, RtenRuntime,
+    Runtime as _,
 };
 
 const DEFAULT_MODEL_PATH: &str = "models/beat_this.onnx";
@@ -33,7 +34,7 @@ struct Cli {
 
     /// Inference runtime to use
     #[arg(long = "runtime", value_enum, default_value = "rten")]
-    runtime: Runtime,
+    runtime: RuntimeChoice,
 
     /// Write JSON output [=FILE]
     #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "")]
@@ -73,7 +74,7 @@ struct Cli {
 }
 
 #[derive(Clone, clap::ValueEnum)]
-enum Runtime {
+enum RuntimeChoice {
     Ort,
     Rten,
 }
@@ -308,7 +309,7 @@ struct FileResult {
 }
 
 /// Process a single audio file through the pipeline, returning analysis and duration.
-fn process_single_file<S: InferenceSession>(
+fn process_single_file<S: Model>(
     bt: &mut beat_this::BeatThis<S>,
     path: &Path,
     verbose: bool,
@@ -326,7 +327,7 @@ fn process_single_file<S: InferenceSession>(
     }
 
     let t = Instant::now();
-    let mel = bt.mel.process(&audio.samples)?;
+    let mel = bt.mel.extract(&audio.samples)?;
     if verbose {
         eprintln!(
             "[timing] Mel spectrogram: {:.3}s ({} frames)",
@@ -336,13 +337,13 @@ fn process_single_file<S: InferenceSession>(
     }
 
     let t = Instant::now();
-    let (beat_logits, downbeat_logits) = bt.inference.process(&mel)?;
+    let (beat_logits, downbeat_logits) = bt.predictor.predict(&mel)?;
     if verbose {
-        eprintln!("[timing] Beat inference: {:.3}s", t.elapsed().as_secs_f64());
+        eprintln!("[timing] Beat prediction: {:.3}s", t.elapsed().as_secs_f64());
     }
 
     let t = Instant::now();
-    let (beats, downbeats) = bt.post.process(&beat_logits, &downbeat_logits)?;
+    let (beats, downbeats) = bt.peak_picker.decode(&beat_logits, &downbeat_logits)?;
     if verbose {
         eprintln!(
             "[timing] Post-processing: {:.3}s",
@@ -363,7 +364,7 @@ fn process_single_file<S: InferenceSession>(
 }
 
 /// Run the full single-file pipeline (audio → mel → inference → postprocessing → output).
-fn run_pipeline<S: InferenceSession>(
+fn run_pipeline<S: Model>(
     bt: &mut beat_this::BeatThis<S>,
     cli: &Cli,
     input_path: &Path,
@@ -396,7 +397,7 @@ fn run_pipeline<S: InferenceSession>(
 }
 
 /// Run batch processing over a list of audio files.
-fn run_batch<S: InferenceSession>(
+fn run_batch<S: Model>(
     bt: &mut beat_this::BeatThis<S>,
     files: &[PathBuf],
     summary_dir: &Path,
@@ -521,7 +522,7 @@ fn main() -> anyhow::Result<()> {
     let t = Instant::now();
 
     match cli.runtime {
-        Runtime::Ort => {
+        RuntimeChoice::Ort => {
             let runtime = OrtRuntime::default();
             if cli.verbose {
                 let coreml = if runtime.is_coreml_available() {
@@ -549,9 +550,9 @@ fn main() -> anyhow::Result<()> {
                 .load_model(&beat_path)
                 .context("Failed to load beat model with ort runtime.")?;
             let mut bt = beat_this::BeatThis {
-                mel: beat_this::MelProcessor::new(mel_session),
-                inference: beat_this::BeatInference::new(beat_session),
-                post: beat_this::PostProcessor::default(),
+                mel: beat_this::MelExtractor::new(mel_session),
+                predictor: beat_this::BeatPredictor::new(beat_session),
+                peak_picker: beat_this::PeakPicker::default(),
             };
             let model_loading_secs = t.elapsed().as_secs_f64() as f32;
             if cli.verbose {
@@ -567,13 +568,13 @@ fn main() -> anyhow::Result<()> {
 
             // End ORT profiling
             if cli.profile.is_some() {
-                if let Ok(path) = bt.inference.session_mut().end_profiling() {
+                if let Ok(path) = bt.predictor.model_mut().end_profiling() {
                     eprintln!("[profile] Beat model trace written to: {}", path);
                 }
             }
         }
 
-        Runtime::Rten => {
+        RuntimeChoice::Rten => {
             if cli.verbose {
                 eprintln!("[info] Runtime: rten (pure Rust)");
             }

@@ -2,7 +2,7 @@ use std::panic::AssertUnwindSafe;
 use std::path::Path;
 
 use beat_this::{
-    num_mel_frames, BeatInference, InferenceRuntime, MelProcessor, OrtRuntime, PostProcessor,
+    num_mel_frames, BeatPredictor, MelExtractor, OrtRuntime, PeakPicker, Runtime,
 };
 
 const MEL_MODEL_PATH: &str = "references/remixatron_rust/MelSpectrogram_Ultimate.onnx";
@@ -20,7 +20,7 @@ fn ort_is_available() -> bool {
 }
 
 #[test]
-fn test_postprocessing_with_real_inference() {
+fn test_peak_picking_with_real_inference() {
     if !ort_is_available() {
         eprintln!("Skipping test: ORT runtime not available");
         return;
@@ -37,30 +37,30 @@ fn test_postprocessing_with_real_inference() {
 
     let runtime = OrtRuntime::default();
 
-    // Full pipeline: audio → mel → inference → post-processing.
+    // Full pipeline: audio → mel → prediction → peak picking.
     let audio = beat_this::load_audio(audio_path, 22050).expect("Failed to load audio");
     let duration = audio.samples.len() as f32 / 22050.0;
 
     let mel_session = runtime
         .load_model(mel_path)
         .expect("Failed to load mel model");
-    let mut mel_proc = MelProcessor::new(mel_session);
-    let mel = mel_proc.process(&audio.samples).expect("Mel failed");
+    let mut mel_ext = MelExtractor::new(mel_session);
+    let mel = mel_ext.extract(&audio.samples).expect("Mel failed");
     let mel_frames = num_mel_frames(&mel);
 
     let beat_session = runtime
         .load_model(beat_path)
         .expect("Failed to load beat model");
-    let mut beat_proc = BeatInference::new(beat_session);
-    let (beat_logits, downbeat_logits) = beat_proc.process(&mel).expect("Inference failed");
+    let mut predictor = BeatPredictor::new(beat_session);
+    let (beat_logits, downbeat_logits) = predictor.predict(&mel).expect("Prediction failed");
 
     assert_eq!(beat_logits.len(), mel_frames);
 
-    // Post-process.
-    let pp = PostProcessor::default();
-    let (beats, downbeats) = pp
-        .process(&beat_logits, &downbeat_logits)
-        .expect("Post-processing failed");
+    // Decode peaks.
+    let picker = PeakPicker::default();
+    let (beats, downbeats) = picker
+        .decode(&beat_logits, &downbeat_logits)
+        .expect("Peak picking failed");
 
     // Beats and downbeats should be non-empty for real music.
     assert!(!beats.is_empty(), "No beats detected in real music");
@@ -112,7 +112,7 @@ fn test_postprocessing_with_real_inference() {
     }
 
     eprintln!(
-        "Post-processing: {:.1}s audio → {} beats, {} downbeats",
+        "Peak picking: {:.1}s audio → {} beats, {} downbeats",
         duration,
         beats.len(),
         downbeats.len(),

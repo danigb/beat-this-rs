@@ -3,31 +3,31 @@ use anyhow::{ensure, Result};
 /// Default frames per second for the beat model.
 const FPS: f32 = 50.0;
 
-/// Post-processes raw beat/downbeat logits into timestamped events.
+/// Decodes raw beat/downbeat logits into timestamped events.
 ///
 /// Applies max-pool peak picking, thresholding, deduplication, and
 /// downbeat-to-beat alignment to convert per-frame logit vectors
 /// into discrete beat and downbeat timestamps.
-pub struct PostProcessor {
+pub struct PeakPicker {
     fps: f32,
 }
 
-impl Default for PostProcessor {
+impl Default for PeakPicker {
     fn default() -> Self {
         Self { fps: FPS }
     }
 }
 
-impl PostProcessor {
-    /// Create a new post-processor with the given frame rate.
+impl PeakPicker {
+    /// Create a new peak picker with the given frame rate.
     pub fn new(fps: f32) -> Self {
         Self { fps }
     }
 
-    /// Process beat and downbeat logits into `(beats, downbeats)` timestamps in seconds.
+    /// Decode beat and downbeat logits into `(beats, downbeats)` timestamps in seconds.
     ///
     /// Both input slices must have the same length (one value per spectrogram frame).
-    pub fn process(
+    pub fn decode(
         &self,
         beat_logits: &[f32],
         downbeat_logits: &[f32],
@@ -264,8 +264,8 @@ mod tests {
         // Place downbeat peak at frame 51 (should snap to beat at frame 50).
         downbeat_logits[51] = 2.0;
 
-        let pp = PostProcessor::new(50.0);
-        let (beats, downbeats) = pp.process(&beat_logits, &downbeat_logits).unwrap();
+        let pp = PeakPicker::new(50.0);
+        let (beats, downbeats) = pp.decode(&beat_logits, &downbeat_logits).unwrap();
 
         assert_eq!(beats, vec![1.0, 2.0, 3.0]); // 50/50, 100/50, 150/50
         assert_eq!(downbeats, vec![1.0]); // 51/50=1.02 snaps to 1.0
@@ -273,16 +273,16 @@ mod tests {
 
     #[test]
     fn test_process_empty_logits() {
-        let pp = PostProcessor::default();
-        let (beats, downbeats) = pp.process(&[], &[]).unwrap();
+        let pp = PeakPicker::default();
+        let (beats, downbeats) = pp.decode(&[], &[]).unwrap();
         assert!(beats.is_empty());
         assert!(downbeats.is_empty());
     }
 
     #[test]
     fn test_process_mismatched_lengths() {
-        let pp = PostProcessor::default();
-        let err = pp.process(&[1.0, 2.0], &[1.0]);
+        let pp = PeakPicker::default();
+        let err = pp.decode(&[1.0, 2.0], &[1.0]);
         assert!(err.is_err());
     }
 }

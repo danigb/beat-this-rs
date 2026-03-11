@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use beat_this::{InferenceRuntime, InferenceSession, RtenRuntime, Tensor};
+use beat_this::{Model, RtenRuntime, Runtime, Tensor};
 
 const MEL_MODEL_PATH: &str = "references/remixatron_rust/MelSpectrogram_Ultimate.onnx";
 const BEAT_MODEL_PATH: &str = "references/remixatron_rust/BeatThis_small0.onnx";

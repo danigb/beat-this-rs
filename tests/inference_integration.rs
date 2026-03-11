@@ -2,7 +2,7 @@ use std::panic::AssertUnwindSafe;
 use std::path::Path;
 
 use beat_this::{
-    num_mel_frames, BeatInference, InferenceRuntime, MelProcessor, OrtRuntime, Tensor,
+    num_mel_frames, BeatPredictor, MelExtractor, OrtRuntime, Runtime, Tensor,
 };
 
 /// Check if the ORT dynamic library is available at runtime.
@@ -19,7 +19,7 @@ const MEL_MODEL_PATH: &str = "references/remixatron_rust/MelSpectrogram_Ultimate
 const BEAT_MODEL_PATH: &str = "references/remixatron_rust/BeatThis_small0.onnx";
 const TEST_AUDIO_PATH: &str = "test_files/It Don't Mean A Thing - Kings of Swing.mp3";
 
-fn load_beat_session() -> Option<impl beat_this::InferenceSession> {
+fn load_beat_session() -> Option<impl beat_this::Model> {
     if !ort_is_available() {
         eprintln!("Skipping test: ORT runtime not available");
         return None;
@@ -37,7 +37,7 @@ fn load_beat_session() -> Option<impl beat_this::InferenceSession> {
     )
 }
 
-fn load_mel_session() -> Option<impl beat_this::InferenceSession> {
+fn load_mel_session() -> Option<impl beat_this::Model> {
     if !ort_is_available() {
         eprintln!("Skipping test: ORT runtime not available");
         return None;
@@ -56,13 +56,13 @@ fn load_mel_session() -> Option<impl beat_this::InferenceSession> {
 }
 
 #[test]
-fn test_beat_inference_short() {
+fn test_beat_prediction_short() {
     let session = match load_beat_session() {
         Some(s) => s,
         None => return,
     };
 
-    let mut processor = BeatInference::new(session);
+    let mut predictor = BeatPredictor::new(session);
 
     // Short spectrogram: 100 frames of zeros (fits in a single chunk).
     let time_frames = 100;
@@ -72,7 +72,7 @@ fn test_beat_inference_short() {
         data: vec![0.0; time_frames * n_mels],
     };
 
-    let (beat_logits, downbeat_logits) = processor.process(&mel).expect("Inference failed");
+    let (beat_logits, downbeat_logits) = predictor.predict(&mel).expect("Prediction failed");
 
     assert_eq!(
         beat_logits.len(),
@@ -102,7 +102,7 @@ fn test_beat_inference_short() {
     );
 
     eprintln!(
-        "Short inference: {time_frames} frames → beat range [{:.2}, {:.2}], downbeat range [{:.2}, {:.2}]",
+        "Short prediction: {time_frames} frames → beat range [{:.2}, {:.2}], downbeat range [{:.2}, {:.2}]",
         beat_logits.iter().cloned().fold(f32::INFINITY, f32::min),
         beat_logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max),
         downbeat_logits.iter().cloned().fold(f32::INFINITY, f32::min),
@@ -111,13 +111,13 @@ fn test_beat_inference_short() {
 }
 
 #[test]
-fn test_beat_inference_long() {
+fn test_beat_prediction_long() {
     let session = match load_beat_session() {
         Some(s) => s,
         None => return,
     };
 
-    let mut processor = BeatInference::new(session);
+    let mut predictor = BeatPredictor::new(session);
 
     // Long spectrogram: 3000 frames (needs multiple chunks).
     let time_frames = 3000;
@@ -127,7 +127,7 @@ fn test_beat_inference_long() {
         data: vec![0.0; time_frames * n_mels],
     };
 
-    let (beat_logits, downbeat_logits) = processor.process(&mel).expect("Inference failed");
+    let (beat_logits, downbeat_logits) = predictor.predict(&mel).expect("Prediction failed");
 
     assert_eq!(beat_logits.len(), time_frames);
     assert_eq!(downbeat_logits.len(), time_frames);
@@ -145,7 +145,7 @@ fn test_beat_inference_long() {
     );
 
     eprintln!(
-        "Long inference: {time_frames} frames → beat range [{:.2}, {:.2}]",
+        "Long prediction: {time_frames} frames → beat range [{:.2}, {:.2}]",
         beat_logits.iter().cloned().fold(f32::INFINITY, f32::min),
         beat_logits
             .iter()
@@ -155,7 +155,7 @@ fn test_beat_inference_long() {
 }
 
 #[test]
-fn test_beat_inference_with_real_audio() {
+fn test_beat_prediction_with_real_audio() {
     let mel_session = match load_mel_session() {
         Some(s) => s,
         None => return,
@@ -171,16 +171,16 @@ fn test_beat_inference_with_real_audio() {
         return;
     }
 
-    // Load audio → mel spectrogram → beat inference.
+    // Load audio → mel spectrogram → beat prediction.
     let audio = beat_this::load_audio(audio_path, 22050).expect("Failed to load audio");
-    let mut mel_proc = MelProcessor::new(mel_session);
-    let mel = mel_proc
-        .process(&audio.samples)
-        .expect("Mel processing failed");
+    let mut mel_ext = MelExtractor::new(mel_session);
+    let mel = mel_ext
+        .extract(&audio.samples)
+        .expect("Mel extraction failed");
     let mel_frames = num_mel_frames(&mel);
 
-    let mut beat_proc = BeatInference::new(beat_session);
-    let (beat_logits, downbeat_logits) = beat_proc.process(&mel).expect("Beat inference failed");
+    let mut predictor = BeatPredictor::new(beat_session);
+    let (beat_logits, downbeat_logits) = predictor.predict(&mel).expect("Beat prediction failed");
 
     assert_eq!(beat_logits.len(), mel_frames);
     assert_eq!(downbeat_logits.len(), mel_frames);
