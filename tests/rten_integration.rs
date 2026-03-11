@@ -14,7 +14,7 @@ fn test_rten_load_mel_model() {
     }
 
     let runtime = RtenRuntime;
-    let _session = runtime
+    let _model = runtime
         .load_model(model_path)
         .expect("Failed to load mel model with rten");
 }
@@ -28,7 +28,7 @@ fn test_rten_mel_inference() {
     }
 
     let runtime = RtenRuntime;
-    let mut session = runtime
+    let mut model = runtime
         .load_model(model_path)
         .expect("Failed to load mel model with rten");
 
@@ -39,7 +39,7 @@ fn test_rten_mel_inference() {
         data: vec![0.0; num_samples],
     };
 
-    let outputs = session
+    let outputs = model
         .run(&[("audio_pcm", &input)])
         .expect("Mel inference failed with rten");
 
@@ -61,7 +61,7 @@ fn test_rten_load_beat_model() {
     }
 
     let runtime = RtenRuntime;
-    let _session = runtime
+    let _model = runtime
         .load_model(model_path)
         .expect("Failed to load beat model with rten");
 }
@@ -75,7 +75,7 @@ fn test_rten_beat_inference() {
     }
 
     let runtime = RtenRuntime;
-    let mut session = runtime
+    let mut model = runtime
         .load_model(model_path)
         .expect("Failed to load beat model with rten");
 
@@ -87,7 +87,7 @@ fn test_rten_beat_inference() {
         data: vec![0.0; time_frames * n_mels],
     };
 
-    let outputs = session
+    let outputs = model
         .run(&[("mel_spectrogram", &input)])
         .expect("Beat inference failed with rten");
 

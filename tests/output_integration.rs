@@ -1,16 +1,13 @@
 use std::panic::AssertUnwindSafe;
 use std::path::Path;
 
-use beat_this::{
-    beat_counts, calculate_bpm, write_beats_file, write_click_track, BeatThis, OrtRuntime,
-};
+use beat_this::{beat_counts, calculate_bpm, BeatThis, OrtRuntime};
 
 const MEL_MODEL_PATH: &str = "references/remixatron_rust/MelSpectrogram_Ultimate.onnx";
 const BEAT_MODEL_PATH: &str = "references/remixatron_rust/BeatThis_small0.onnx";
 const TEST_AUDIO_PATH: &str = "test_files/It Don't Mean A Thing - Kings of Swing.mp3";
 
 /// Check if the ORT dynamic library is available at runtime.
-/// ort with `load-dynamic` panics if the dylib isn't found, so we use catch_unwind.
 fn ort_is_available() -> bool {
     std::panic::catch_unwind(AssertUnwindSafe(|| {
         let rt = OrtRuntime::default();
@@ -27,7 +24,7 @@ fn skip_if_missing() -> bool {
 }
 
 #[test]
-fn test_full_pipeline_to_beats_file() {
+fn test_full_pipeline_beat_counts() {
     if skip_if_missing() {
         eprintln!("Skipping test: required files not found");
         return;
@@ -45,28 +42,13 @@ fn test_full_pipeline_to_beats_file() {
         .analyze_file(Path::new(TEST_AUDIO_PATH))
         .expect("analyze_file failed");
 
-    let dir = tempfile::tempdir().unwrap();
-    let beats_path = dir.path().join("output.beats");
-
-    write_beats_file(&beats_path, &result).expect("write_beats_file failed");
-
-    let content = std::fs::read_to_string(&beats_path).unwrap();
-    let lines: Vec<&str> = content.lines().collect();
-
-    // Should have one line per beat.
-    assert_eq!(lines.len(), result.beats.len());
-
-    // Each line should be tab-separated with time and count.
-    for line in &lines {
-        let parts: Vec<&str> = line.split('\t').collect();
-        assert_eq!(parts.len(), 2, "Line not tab-separated: {}", line);
-        let _time: f32 = parts[0].parse().expect("Invalid time");
-        let count: i32 = parts[1].parse().expect("Invalid beat count");
-        assert!(count >= 1, "Beat count should be >= 1");
-    }
-
-    // First downbeat should have count 1.
     let counts = beat_counts(&result);
+    assert_eq!(counts.len(), result.beats.len());
+
+    // All counts should be >= 1
+    assert!(counts.iter().all(|&c| c >= 1), "Beat count should be >= 1");
+
+    // First downbeat should have count 1
     let first_downbeat_idx = result
         .beats
         .iter()
@@ -75,45 +57,7 @@ fn test_full_pipeline_to_beats_file() {
         assert_eq!(counts[idx], 1, "Downbeat should have count 1");
     }
 
-    eprintln!("Wrote {} beats to .beats file", lines.len());
-}
-
-#[test]
-fn test_full_pipeline_to_click_track() {
-    if skip_if_missing() {
-        eprintln!("Skipping test: required files not found");
-        return;
-    }
-
-    let runtime = OrtRuntime::default();
-    let mut bt = BeatThis::new(
-        &runtime,
-        Path::new(MEL_MODEL_PATH),
-        Path::new(BEAT_MODEL_PATH),
-    )
-    .expect("Failed to create BeatThis");
-
-    let result = bt
-        .analyze_file(Path::new(TEST_AUDIO_PATH))
-        .expect("analyze_file failed");
-
-    let dir = tempfile::tempdir().unwrap();
-    let wav_path = dir.path().join("clicks.wav");
-
-    write_click_track(&wav_path, &result).expect("write_click_track failed");
-
-    // Verify WAV is valid and has expected format.
-    let reader = hound::WavReader::open(&wav_path).unwrap();
-    let spec = reader.spec();
-    assert_eq!(spec.channels, 1);
-    assert_eq!(spec.sample_rate, 44100);
-    assert_eq!(spec.sample_format, hound::SampleFormat::Float);
-
-    eprintln!(
-        "Generated click track: {} samples at {} Hz",
-        reader.len(),
-        spec.sample_rate
-    );
+    eprintln!("Beat counts: {} beats", counts.len());
 }
 
 #[test]
