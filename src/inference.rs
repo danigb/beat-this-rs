@@ -52,7 +52,7 @@ impl<M: Model> BeatPredictor<M> {
         // earlier chunks are written last, so they overwrite later chunks
         // in overlapping regions.
         for &start in starts.iter().rev() {
-            let chunk = extract_chunk(mel, start, full_time);
+            let chunk = extract_chunk(mel, start);
             let chunk_time = chunk.shape[1];
 
             let mut outputs = self.model.run(&[("spectrogram", &chunk)])?;
@@ -126,11 +126,12 @@ fn generate_starts(full_time: usize) -> Vec<i32> {
 
 /// Extract a single chunk from the mel spectrogram, zero-padding as needed.
 ///
-/// For long audio (multiple chunks), returns shape `[1, CHUNK_SIZE, 128]`.
-/// For short audio (single chunk, `full_time <= STRIDE`), returns a minimal
-/// chunk with only `BORDER_SIZE` padding on each side, matching the Python
-/// `split_piece` behavior where short pieces are NOT padded to full chunk size.
-fn extract_chunk(mel: &Tensor, start: i32, full_time: usize) -> Tensor {
+/// Right padding is capped at `BORDER_SIZE`, matching Python's `split_piece`:
+/// `right = max(0, min(border_size, start + chunk_size - len(spect)))`.
+/// For short audio this produces a minimal chunk; for long audio the
+/// `avoid_short_end` adjustment ensures chunks fill to `CHUNK_SIZE`.
+fn extract_chunk(mel: &Tensor, start: i32) -> Tensor {
+    let full_time = mel.shape[1];
     let n_mels = mel.shape[2]; // 128
 
     let actual_start = start.max(0) as usize;
@@ -138,15 +139,9 @@ fn extract_chunk(mel: &Tensor, start: i32, full_time: usize) -> Tensor {
     let pad_left = (-start).max(0) as usize;
     let n_frames = actual_end - actual_start;
 
-    // For short audio (fits in a single chunk), only pad BORDER_SIZE on each
-    // side instead of zero-padding to full CHUNK_SIZE. This matches Python's
-    // split_piece which caps right padding at BORDER_SIZE.
-    let pad_right = if full_time <= STRIDE {
-        BORDER_SIZE.min((start + CHUNK_SIZE as i32) as usize - full_time)
-    } else {
-        // Long audio: pad to full CHUNK_SIZE
-        CHUNK_SIZE - pad_left - n_frames
-    };
+    // Mirrors Python/C++: max(0, min(border_size, start + chunk_size - len))
+    let pad_right =
+        0.max((start + CHUNK_SIZE as i32 - full_time as i32).min(BORDER_SIZE as i32)) as usize;
 
     let chunk_time = pad_left + n_frames + pad_right;
     let mut data = vec![0.0f32; chunk_time * n_mels];
@@ -217,18 +212,14 @@ mod tests {
             let starts = generate_starts(full_time);
             let mut covered = vec![false; full_time];
             for &start in &starts {
-                let chunk_time = if full_time <= STRIDE {
-                    // Short audio: minimal chunk
-                    let pad_left = (-start).max(0) as usize;
-                    let actual_end = ((start + CHUNK_SIZE as i32) as usize).min(full_time);
-                    let actual_start = start.max(0) as usize;
-                    let n_frames = actual_end - actual_start;
-                    let pad_right =
-                        BORDER_SIZE.min((start + CHUNK_SIZE as i32) as usize - full_time);
-                    pad_left + n_frames + pad_right
-                } else {
-                    CHUNK_SIZE
-                };
+                let pad_left = (-start).max(0) as usize;
+                let actual_end = ((start + CHUNK_SIZE as i32) as usize).min(full_time);
+                let actual_start = start.max(0) as usize;
+                let n_frames = actual_end - actual_start;
+                let pad_right = 0
+                    .max((start + CHUNK_SIZE as i32 - full_time as i32).min(BORDER_SIZE as i32))
+                    as usize;
+                let chunk_time = pad_left + n_frames + pad_right;
                 let write_start = (start + BORDER_SIZE as i32).max(0) as usize;
                 let write_end =
                     ((start as usize).wrapping_add(chunk_time) - BORDER_SIZE).min(full_time);
@@ -255,7 +246,7 @@ mod tests {
             data: vec![1.0; full_time * n_mels],
         };
 
-        let chunk = extract_chunk(&mel, -6, full_time);
+        let chunk = extract_chunk(&mel, -6);
         // Expected: 6 (left pad) + 100 (data) + 6 (right pad) = 112
         assert_eq!(chunk.shape, vec![1, 112, n_mels]);
 
@@ -291,7 +282,7 @@ mod tests {
             data: vec![1.0; full_time * n_mels],
         };
 
-        let chunk = extract_chunk(&mel, -6, full_time);
+        let chunk = extract_chunk(&mel, -6);
         assert_eq!(chunk.shape, vec![1, CHUNK_SIZE, n_mels]);
 
         // First 6 frames should be zero (padding).
@@ -312,7 +303,7 @@ mod tests {
             data: vec![1.0; full_time * n_mels],
         };
 
-        let chunk = extract_chunk(&mel, 100, full_time);
+        let chunk = extract_chunk(&mel, 100);
         assert_eq!(chunk.shape, vec![1, CHUNK_SIZE, n_mels]);
 
         // All frames should be 1.0 (no padding needed).
