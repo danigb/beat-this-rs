@@ -53,6 +53,7 @@ impl<M: Model> BeatPredictor<M> {
         // in overlapping regions.
         for &start in starts.iter().rev() {
             let chunk = extract_chunk(mel, start);
+            let chunk_time = chunk.shape[1];
 
             let mut outputs = self.model.run(&[("spectrogram", &chunk)])?;
 
@@ -60,16 +61,16 @@ impl<M: Model> BeatPredictor<M> {
             let downbeat = extract_output(&mut outputs, "downbeat", "downbeat_logits")?;
 
             // Strip border frames from both ends of the prediction.
-            let valid_beat = &beat.data[BORDER_SIZE..CHUNK_SIZE - BORDER_SIZE];
-            let valid_downbeat = &downbeat.data[BORDER_SIZE..CHUNK_SIZE - BORDER_SIZE];
+            let valid_beat = &beat.data[BORDER_SIZE..chunk_time - BORDER_SIZE];
+            let valid_downbeat = &downbeat.data[BORDER_SIZE..chunk_time - BORDER_SIZE];
 
             // Write valid predictions to output buffers.
             let write_start = (start + BORDER_SIZE as i32) as usize;
-            for i in 0..STRIDE {
+            for (i, (&b, &d)) in valid_beat.iter().zip(valid_downbeat.iter()).enumerate() {
                 let dest = write_start + i;
                 if dest < full_time {
-                    beat_logits[dest] = valid_beat[i];
-                    downbeat_logits[dest] = valid_downbeat[i];
+                    beat_logits[dest] = b;
+                    downbeat_logits[dest] = d;
                 }
             }
         }
@@ -125,7 +126,10 @@ fn generate_starts(full_time: usize) -> Vec<i32> {
 
 /// Extract a single chunk from the mel spectrogram, zero-padding as needed.
 ///
-/// Returns a `Tensor` of shape `[1, CHUNK_SIZE, 128]`.
+/// Right padding is capped at `BORDER_SIZE`, matching Python's `split_piece`:
+/// `right = max(0, min(border_size, start + chunk_size - len(spect)))`.
+/// For short audio this produces a minimal chunk; for long audio the
+/// `avoid_short_end` adjustment ensures chunks fill to `CHUNK_SIZE`.
 fn extract_chunk(mel: &Tensor, start: i32) -> Tensor {
     let full_time = mel.shape[1];
     let n_mels = mel.shape[2]; // 128
@@ -133,8 +137,14 @@ fn extract_chunk(mel: &Tensor, start: i32) -> Tensor {
     let actual_start = start.max(0) as usize;
     let actual_end = ((start + CHUNK_SIZE as i32) as usize).min(full_time);
     let pad_left = (-start).max(0) as usize;
+    let n_frames = actual_end - actual_start;
 
-    let mut data = vec![0.0f32; CHUNK_SIZE * n_mels];
+    // Mirrors Python/C++: max(0, min(border_size, start + chunk_size - len))
+    let pad_right =
+        0.max((start + CHUNK_SIZE as i32 - full_time as i32).min(BORDER_SIZE as i32)) as usize;
+
+    let chunk_time = pad_left + n_frames + pad_right;
+    let mut data = vec![0.0f32; chunk_time * n_mels];
 
     // Copy mel frames into the chunk at the correct offset.
     for t in actual_start..actual_end {
@@ -146,7 +156,7 @@ fn extract_chunk(mel: &Tensor, start: i32) -> Tensor {
     }
 
     Tensor {
-        shape: vec![1, CHUNK_SIZE, n_mels],
+        shape: vec![1, chunk_time, n_mels],
         data,
     }
 }
@@ -202,9 +212,17 @@ mod tests {
             let starts = generate_starts(full_time);
             let mut covered = vec![false; full_time];
             for &start in &starts {
+                let pad_left = (-start).max(0) as usize;
+                let actual_end = ((start + CHUNK_SIZE as i32) as usize).min(full_time);
+                let actual_start = start.max(0) as usize;
+                let n_frames = actual_end - actual_start;
+                let pad_right = 0
+                    .max((start + CHUNK_SIZE as i32 - full_time as i32).min(BORDER_SIZE as i32))
+                    as usize;
+                let chunk_time = pad_left + n_frames + pad_right;
                 let write_start = (start + BORDER_SIZE as i32).max(0) as usize;
                 let write_end =
-                    ((start + CHUNK_SIZE as i32 - BORDER_SIZE as i32) as usize).min(full_time);
+                    ((start as usize).wrapping_add(chunk_time) - BORDER_SIZE).min(full_time);
                 for i in write_start..write_end {
                     covered[i] = true;
                 }
@@ -218,10 +236,47 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_chunk_first() {
-        // First chunk (start = -6): should have 6 frames of left padding.
+    fn test_extract_chunk_short_audio() {
+        // Short audio (100 frames < STRIDE=1488): minimal padding.
+        // Python behavior: pad_left=6, frames=100, pad_right=6 → 112 total
         let n_mels = 128;
         let full_time = 100;
+        let mel = Tensor {
+            shape: vec![1, full_time, n_mels],
+            data: vec![1.0; full_time * n_mels],
+        };
+
+        let chunk = extract_chunk(&mel, -6);
+        // Expected: 6 (left pad) + 100 (data) + 6 (right pad) = 112
+        assert_eq!(chunk.shape, vec![1, 112, n_mels]);
+
+        // First 6 frames should be zero (left padding).
+        for t in 0..6 {
+            assert_eq!(
+                chunk.data[t * n_mels],
+                0.0,
+                "Expected zero padding at t={t}"
+            );
+        }
+        // Frame at t=6 should be 1.0 (from mel frame 0).
+        assert_eq!(chunk.data[6 * n_mels], 1.0);
+        // Last data frame at t=105 should be 1.0.
+        assert_eq!(chunk.data[105 * n_mels], 1.0);
+        // Last 6 frames should be zero (right padding).
+        for t in 106..112 {
+            assert_eq!(
+                chunk.data[t * n_mels],
+                0.0,
+                "Expected zero padding at t={t}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_extract_chunk_long_audio_first() {
+        // Long audio, first chunk (start = -6): padded to CHUNK_SIZE.
+        let n_mels = 128;
+        let full_time = 5000;
         let mel = Tensor {
             shape: vec![1, full_time, n_mels],
             data: vec![1.0; full_time * n_mels],
@@ -232,21 +287,15 @@ mod tests {
 
         // First 6 frames should be zero (padding).
         for t in 0..6 {
-            for f in 0..n_mels {
-                assert_eq!(
-                    chunk.data[t * n_mels + f],
-                    0.0,
-                    "Expected zero padding at t={t}, f={f}"
-                );
-            }
+            assert_eq!(chunk.data[t * n_mels], 0.0);
         }
         // Frame at t=6 should be 1.0 (from mel frame 0).
         assert_eq!(chunk.data[6 * n_mels], 1.0);
     }
 
     #[test]
-    fn test_extract_chunk_middle() {
-        // Middle chunk (start = 100, full_time = 5000): no padding.
+    fn test_extract_chunk_long_audio_middle() {
+        // Middle chunk (start = 100, full_time = 5000): no padding, full CHUNK_SIZE.
         let n_mels = 128;
         let full_time = 5000;
         let mel = Tensor {
