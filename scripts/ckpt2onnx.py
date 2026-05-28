@@ -7,11 +7,17 @@
 #     "beat-this @ https://github.com/CPJKU/beat_this/archive/main.zip",
 # ]
 # ///
-"""Download a Beat This! checkpoint and convert it to ONNX format.
+"""Maintainer tool: download a Beat This! checkpoint and convert it to ONNX.
+
+End users do NOT need this. The test suite uses the committed
+`models/beat_this_small.onnx`, and `scripts/download-models.sh` fetches the
+full FP32 `beat_this.onnx` from GitHub Releases with curl. Use this script only
+to (re)generate the release/test model assets, which requires torch + onnx +
+onnxscript via uv.
 
 Usage:
-    uv run scripts/ckpt2onnx.py final0
-    uv run scripts/ckpt2onnx.py small0
+    uv run scripts/ckpt2onnx.py final0   # FP32 model -> release asset
+    uv run scripts/ckpt2onnx.py small1   # small model -> models/beat_this_small.onnx
 """
 
 import sys

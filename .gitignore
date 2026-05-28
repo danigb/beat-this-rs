@@ -1,11 +1,11 @@
 .DS_Store
 .vscode
-references/
 tmp/
 target/
 integration_test_files/
 models/*
 !models/mel_spectrogram.onnx
+!models/beat_this_small.onnx
 *.wav
 *.beats
 onnxruntime

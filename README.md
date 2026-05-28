@@ -49,13 +49,17 @@ The system consists of four main components:
 
 ### From Source
 
-Requires [uv](https://docs.astral.sh/uv/) for Python model management scripts. The scripts will download and convert models into onnx format (they are published as [ckpt files](https://cloud.cp.jku.at/index.php/s/7ik4RrBKTS273gp))
+No Python toolchain is required to build or test. The mel model and a small beat
+model (~10 MB) are committed to the repo, so the test suite runs on a fresh clone
+with zero setup. The full-accuracy FP32 beat model is optional and fetched with
+`curl` (see [Model Setup](#model-setup)).
 
 ```bash
 git clone git@github.com:danigb/beat-this-rs.git
 cd beat-this-rs
-./scripts/download-models.sh    # Downloads model via uv run
 cargo build --release
+cargo test                      # runs against the committed small model — no setup needed
+./scripts/download-models.sh    # optional: fetch the full FP32 model (curl, no Python)
 ```
 
 The release binary will be at `target/release/beat-this`. Release mode enables LTO and stripping for optimized performance.
@@ -75,36 +79,42 @@ Then run with `--runtime ort`.
 
 ## Model Setup
 
-The mel spectrogram model (`models/mel_spectrogram.onnx`) is included in the repository. To download and convert the beat tracking model:
+Two models are committed to the repository, so the test suite and a basic run work
+with **no setup**:
+
+- `models/mel_spectrogram.onnx` (~270 KB) — log-mel front end.
+- `models/beat_this_small.onnx` (~10 MB) — small beat model used by the test suite
+  and a good default for quick runs.
+
+The full-accuracy FP32 beat model (`beat_this.onnx`, ~83 MB) is **not** committed.
+Fetch it from GitHub Releases with `curl` (no Python):
 
 ```bash
-./scripts/download-models.sh
+./scripts/download-models.sh        # downloads + checksum-verifies models/beat_this.onnx
 ```
 
-This uses [uv](https://docs.astral.sh/uv/) internally to manage Python dependencies. Alternatively, download and convert manually:
-
-```bash
-uv run scripts/ckpt2onnx.py final0
-mv models/final0.onnx models/beat_this.onnx
-```
-
-For the small model (~10 MB, optional):
-
-```bash
-uv run scripts/ckpt2onnx.py small0
-mv models/small0.onnx models/beat_this_small.onnx
-```
-
-After setup, the `models/` directory should contain:
+After downloading, the `models/` directory contains:
 
 ```
 models/
-├── mel_spectrogram.onnx    # Included in repo (~270 KB)
-├── beat_this.onnx          # Standard model (~83 MB)
-└── beat_this_small.onnx    # Small model (~10 MB, optional)
+├── mel_spectrogram.onnx    # committed (~270 KB)
+├── beat_this_small.onnx    # committed (~10 MB)
+└── beat_this.onnx          # downloaded FP32 model (~83 MB)
 ```
 
-Visit [original repo](https://github.com/CPJKU/beat_this?tab=readme-ov-file#available-models) for available models
+### Maintainers: regenerating model assets
+
+The ONNX models are produced from the official Beat This! checkpoints with
+`scripts/ckpt2onnx.py`, which needs [uv](https://docs.astral.sh/uv/) (torch + onnx +
+onnxscript). End users never need this — it exists only to (re)generate the release
+asset and the committed small model:
+
+```bash
+uv run scripts/ckpt2onnx.py final0   # FP32 -> upload models/final0.onnx as beat_this.onnx release asset
+uv run scripts/ckpt2onnx.py small1   # small -> commit models/small1.onnx as beat_this_small.onnx
+```
+
+Visit the [original repo](https://github.com/CPJKU/beat_this?tab=readme-ov-file#available-models) for available checkpoints.
 
 ## Usage
 
@@ -255,9 +265,8 @@ beat-this-rs/
 │       ├── mod.rs            # Runtime trait abstractions
 │       ├── ort.rs            # ONNX Runtime backend (CoreML on macOS)
 │       └── rten.rs           # Pure-Rust backend
-├── models/                   # ONNX model files (mel model included, beat models downloaded)
+├── models/                   # ONNX models (mel + small beat model committed; FP32 downloaded)
 ├── tests/                    # Integration tests
-├── references/               # Reference implementations
 └── Cargo.toml
 ```
 

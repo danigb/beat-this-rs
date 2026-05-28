@@ -1,17 +1,31 @@
 #!/usr/bin/env bash
-# Download and convert Beat This! models into models/
-# Requires: Python 3.10+ and uv (https://docs.astral.sh/uv/)
+# Download the Beat This! FP32 beat model from GitHub Releases into models/.
+# Requires: curl and a SHA-256 tool (sha256sum on Linux, shasum on macOS).
+# No Python/torch/uv — the small model used by the test suite is committed to git.
 set -euo pipefail
+
+REPO="danigb/beat-this-rs"
+ASSET="beat_this.onnx"
+# The FP32 model lives in a dedicated release decoupled from code/version releases.
+RELEASE_TAG="model-large"
+BASE="https://github.com/${REPO}/releases/download/${RELEASE_TAG}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR/.."
+mkdir -p models
 
-echo "Downloading and converting standard model (~83 MB)..."
-uv run scripts/ckpt2onnx.py final0
-mv models/final0.onnx models/beat_this.onnx
-echo "Saved models/beat_this.onnx"
+echo "Downloading ${ASSET} from the ${RELEASE_TAG} release of ${REPO}..."
+curl -fL --retry 3 -o "models/${ASSET}" "${BASE}/${ASSET}"
+curl -fL --retry 3 -o "models/${ASSET}.sha256" "${BASE}/${ASSET}.sha256"
 
-echo ""
-echo "Optional: download the small model (~10 MB):"
-echo "  uv run scripts/ckpt2onnx.py small0"
-echo "  mv models/small0.onnx models/beat_this_small.onnx"
+echo "Verifying SHA-256..."
+(
+    cd models
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum -c "${ASSET}.sha256"
+    else
+        shasum -a 256 -c "${ASSET}.sha256"
+    fi
+)
+rm -f "models/${ASSET}.sha256"
+echo "Saved models/${ASSET}"

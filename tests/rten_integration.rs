@@ -2,8 +2,8 @@ use std::path::Path;
 
 use beat_this::{Model, RtenRuntime, Runtime, Tensor};
 
-const MEL_MODEL_PATH: &str = "references/remixatron_rust/MelSpectrogram_Ultimate.onnx";
-const BEAT_MODEL_PATH: &str = "references/remixatron_rust/BeatThis_small0.onnx";
+const MEL_MODEL_PATH: &str = "models/mel_spectrogram.onnx";
+const BEAT_MODEL_PATH: &str = "models/beat_this_small.onnx";
 
 #[test]
 fn test_rten_load_mel_model() {
@@ -88,7 +88,7 @@ fn test_rten_beat_inference() {
     };
 
     let outputs = model
-        .run(&[("mel_spectrogram", &input)])
+        .run(&[("spectrogram", &input)])
         .expect("Beat inference failed with rten");
 
     assert!(
@@ -104,9 +104,9 @@ fn test_rten_beat_inference() {
 
 #[test]
 fn test_rten_full_pipeline() {
-    let mel_path = Path::new("models/mel_spectrogram.onnx");
-    let beat_path = Path::new("models/beat_this.onnx");
-    let audio_path = Path::new("tests/fixtures/test.mp3");
+    let mel_path = Path::new(MEL_MODEL_PATH);
+    let beat_path = Path::new(BEAT_MODEL_PATH);
+    let audio_path = Path::new("test_files/It Don't Mean A Thing - Kings of Swing.mp3");
 
     if !mel_path.exists() || !beat_path.exists() || !audio_path.exists() {
         eprintln!("Skipping test: model or audio files not found");

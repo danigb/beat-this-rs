@@ -91,7 +91,7 @@ impl Model for RtenModel {
 
         // Convert outputs to named Tensor map
         let mut result = HashMap::new();
-        for (&id, value) in self.output_ids.iter().zip(outputs.into_iter()) {
+        for (&id, value) in self.output_ids.iter().zip(outputs) {
             let name = self
                 .output_names
                 .iter()
