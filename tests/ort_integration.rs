@@ -13,9 +13,9 @@ fn ort_is_available() -> bool {
     .is_ok()
 }
 
-/// Path to a small ONNX model for testing (from references, gitignored).
-const MEL_MODEL_PATH: &str = "references/remixatron_rust/MelSpectrogram_Ultimate.onnx";
-const BEAT_MODEL_PATH: &str = "references/remixatron_rust/BeatThis_small0.onnx";
+/// ONNX models for testing (both committed to the repo).
+const MEL_MODEL_PATH: &str = "models/mel_spectrogram.onnx";
+const BEAT_MODEL_PATH: &str = "models/beat_this_small.onnx";
 
 #[test]
 fn test_load_mel_model() {
@@ -116,7 +116,7 @@ fn test_beat_inference() {
     };
 
     let outputs = model
-        .run(&[("mel_spectrogram", &input)])
+        .run(&[("spectrogram", &input)])
         .expect("Beat inference failed");
 
     // The model should produce beat and downbeat logit outputs

@@ -13,8 +13,8 @@ fn ort_is_available() -> bool {
     .is_ok()
 }
 
-const MEL_MODEL_PATH: &str = "references/remixatron_rust/MelSpectrogram_Ultimate.onnx";
-const BEAT_MODEL_PATH: &str = "references/remixatron_rust/BeatThis_small0.onnx";
+const MEL_MODEL_PATH: &str = "models/mel_spectrogram.onnx";
+const BEAT_MODEL_PATH: &str = "models/beat_this_small.onnx";
 
 /// Run mel inference through both backends and compare output shapes and values.
 #[test]
@@ -89,12 +89,12 @@ fn test_cross_runtime_beat() {
     // ort
     let ort_runtime = OrtRuntime::default();
     let mut ort_model = ort_runtime.load_model(model_path).unwrap();
-    let ort_outputs = ort_model.run(&[("mel_spectrogram", &input)]).unwrap();
+    let ort_outputs = ort_model.run(&[("spectrogram", &input)]).unwrap();
 
     // rten
     let rten_runtime = RtenRuntime;
     let mut rten_model = rten_runtime.load_model(model_path).unwrap();
-    let rten_outputs = rten_model.run(&[("mel_spectrogram", &input)]).unwrap();
+    let rten_outputs = rten_model.run(&[("spectrogram", &input)]).unwrap();
 
     // Both should have the same output keys
     let mut ort_keys: Vec<_> = ort_outputs.keys().collect();

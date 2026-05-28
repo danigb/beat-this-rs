@@ -12,8 +12,8 @@ fn ort_is_available() -> bool {
     .is_ok()
 }
 
-const MEL_MODEL_PATH: &str = "references/remixatron_rust/MelSpectrogram_Ultimate.onnx";
-const BEAT_MODEL_PATH: &str = "references/remixatron_rust/BeatThis_small0.onnx";
+const MEL_MODEL_PATH: &str = "models/mel_spectrogram.onnx";
+const BEAT_MODEL_PATH: &str = "models/beat_this_small.onnx";
 const TEST_AUDIO_PATH: &str = "test_files/It Don't Mean A Thing - Kings of Swing.mp3";
 
 fn skip_if_missing() -> bool {
