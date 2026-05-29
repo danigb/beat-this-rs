@@ -27,13 +27,21 @@ path = "src/main.rs"
 name = "beat_this"
 path = "src/lib.rs"
 
+[features]
+default = []
+# Opt-in ONNX Runtime backend (`--runtime ort`). Pure-Rust `rten` is the default
+# and needs no system libraries; `ort` is kept as a maintainer reference oracle
+# (cross-runtime parity, op-level `--profile`) and requires libonnxruntime at
+# runtime. See README / docs/tasks/015-default-runtime.
+ort = ["dep:ort", "dep:ndarray"]
+
 [dependencies]
-ort = { version = "=2.0.0-rc.11", features = [
+ort = { version = "=2.0.0-rc.11", optional = true, features = [
     "ndarray",
     "load-dynamic",
     "coreml",
 ] }
-ndarray = "0.17"
+ndarray = { version = "0.17", optional = true }
 rten = { version = "0.24", features = ["fft"] }
 rten-tensor = { version = "0.24" }
 anyhow = "1"
