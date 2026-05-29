@@ -1,6 +1,12 @@
 MIT License
 
-Copyright (c) 2025 danigb
+beat-this-rs is a Rust port of "Beat This!" by the Institute of Computational
+Perception, JKU Linz, Austria (https://github.com/CPJKU/beat_this), which is
+itself distributed under the MIT License. Both copyright notices are retained
+below under the same MIT terms.
+
+Copyright (c) 2025 danigb (Rust port)
+Copyright (c) 2024 Institute of Computational Perception, JKU Linz, Austria ("Beat This!" original work)
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

@@ -1,83 +1,63 @@
 # [Beat This! Rust](https://github.com/danigb/beat-this-rs)
 
+[![Crates.io](https://img.shields.io/crates/v/beat-this.svg)](https://crates.io/crates/beat-this)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/danigb/beat-this-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/danigb/beat-this-rs/actions/workflows/ci.yml)
 
-A Rust port of the "Beat This!" AI-powered beat tracking system from Johannes Kepler University Linz.
+A Rust port of the ["Beat This!"](https://github.com/CPJKU/beat_this) AI beat-tracking
+system (ISMIR 2024, Johannes Kepler University Linz). It detects musical **beats** and
+**downbeats** in audio with no runtime dependencies beyond the model weights.
 
-The port was made with [Claude](https://claude.ai/)
+Ported with [Claude](https://claude.ai/).
 
-## Overview
-
-This is a Rust port of the Beat This! inteference mechanism, originally published at ISMIR 2024. The goal is to generate beat information from any audio without any external dependency (except the model weights themselves)
-
-The original system uses a transformer-based neural network to detect musical beats and downbeats in audio files with high accuracy.
-
-- **Original Paper**: ["Beat This! Accurate and Generalizable Beat Tracking"](https://arxiv.org/pdf/2407.21658)
-- **Original Repository**: https://github.com/CPJKU/beat_this
-- **C++ Port**: https://github.com/mosynthkey/beat_this_cpp
+- **Paper**: ["Beat This! Accurate and Generalizable Beat Tracking"](https://arxiv.org/pdf/2407.21658)
+- **Original repo**: https://github.com/CPJKU/beat_this · **C++ port**: https://github.com/mosynthkey/beat_this_cpp
 
 ## Features
 
-- **Two Runtime Backends**: Choose between `rten` (default, pure Rust, zero external dependencies) or `ort` (ONNX Runtime, dynamicaly loaded)
-- **Multiple Output Formats**: JSON, plain text `.beats` files, click track WAV, or mixed audio
-- **Batch Processing**: Process entire directories of audio files with summary statistics
-- **BPM Estimation**: Automatic tempo detection from beat timestamps
-- **Mel Spectrogram Export**: Save mel spectrograms as `.npy` files for downstream analysis
-- **Rust Library**: Clean public API for embedding in other applications
-- **Multiple Model Variants**: Standard and small model sizes
+- **Pure-Rust by default** — the `rten` backend needs no system libraries; `ort` (ONNX
+  Runtime, CoreML on macOS) is available as an opt-in backend.
+- **Bundled small model** — clone and run with zero setup; download the full-accuracy
+  model when you need it.
+- **CLI + library** — a `beat-this` binary and a clean `beat_this` crate API.
+- **Many outputs** — JSON, plain-text `.beats`, click-track WAV, mixed audio, and mel
+  spectrogram `.npy`.
+- **Batch mode** — process directories or globs with a summary file.
 
-## Architecture
+## Quick start
 
-The system consists of four main components:
-
-1. **Audio Processing**: Load audio files (WAV, MP3, FLAC, OGG via symphonia) and resample to 22050 Hz mono
-2. **Mel Spectrogram**: Convert audio to 128-dimensional Mel spectrograms using an ONNX model
-3. **Beat Inference**: Run the trained transformer model in overlapping 30-second chunks
-4. **Post-processing**: Extract beat and downbeat timestamps via peak detection, deduplication, and downbeat snapping
-
-## Dependencies
-
-- **rten**: Pure-Rust ONNX runtime (default backend, no external dependencies)
-- **ort**: ONNX Runtime bindings with CoreML support on macOS (optional backend)
-- **symphonia**: Audio decoding (MP3, WAV, FLAC, OGG)
-- **rubato**: High-quality sinc resampling
-- **hound**: WAV file writing
-- **ndarray**: N-dimensional array operations
-
-## Installation
-
-### From Source
-
-No Python toolchain is required to build or test. The mel model and a small beat
-model (~10 MB) are committed to the repo, so the test suite runs on a fresh clone
-with zero setup. The full-accuracy FP32 beat model is optional and fetched with
-`curl` (see [Model Setup](#model-setup)).
+No Python toolchain required. The mel model and a small beat model are committed to the
+repo, so you can run inference immediately after building:
 
 ```bash
 git clone git@github.com:danigb/beat-this-rs.git
 cd beat-this-rs
 cargo build --release
-cargo test                      # runs against the committed small model — no setup needed
-./scripts/download-models.sh    # optional: fetch the full FP32 model (curl, no Python)
+
+# Run with the bundled small model (zero setup):
+./target/release/beat-this input.mp3 --model models/beat_this_small.onnx
+
+# For best accuracy, fetch the full model once — then it's the default:
+./scripts/download-models.sh
+./target/release/beat-this input.mp3
 ```
 
-The release binary will be at `target/release/beat-this`. Release mode enables LTO and stripping for optimized performance.
+## Install
 
-### Using the ORT Runtime
-
-The default `rten` runtime requires no external dependencies. If you want to use the `ort` runtime, install ONNX Runtime first:
+**As a CLI tool** (from crates.io):
 
 ```bash
-# macOS
-brew install onnxruntime
-
-# Or download from https://github.com/microsoft/onnxruntime/releases
+cargo install beat-this
 ```
 
-Then run with `--runtime ort`.
+The published crate does **not** bundle the model files. The committed mel + small models
+live in the repo's [`models/`](models/) directory, and the full beat model is on
+[Releases](https://github.com/danigb/beat-this-rs/releases) (see [Models](#models)). Pass
+their paths explicitly:
 
-## Model Setup
+```bash
+beat-this input.mp3 --model beat_this.onnx --mel-model mel_spectrogram.onnx
+```
 
 Two models are committed to the repository, so the test suite and a basic run work
 with **no setup**:
@@ -93,120 +73,85 @@ Fetch it from GitHub Releases with `curl` (no Python):
 ./scripts/download-models.sh        # downloads + checksum-verifies models/beat_this.onnx
 ```
 
-After downloading, the `models/` directory contains:
+<details>
+<summary>Maintainers: regenerating model assets</summary>
 
-```
-models/
-├── mel_spectrogram.onnx    # committed (~270 KB)
-├── beat_this_small.onnx    # committed (~10 MB)
-└── beat_this.onnx          # downloaded FP32 model (~83 MB)
-```
-
-### Maintainers: regenerating model assets
-
-The ONNX models are produced from the official Beat This! checkpoints with
+The ONNX files are converted from the official Beat This! checkpoints with
 `scripts/ckpt2onnx.py`, which needs [uv](https://docs.astral.sh/uv/) (torch + onnx +
-onnxscript). End users never need this — it exists only to (re)generate the release
-asset and the committed small model:
+onnxscript). End users never run this — it only (re)generates the committed small model
+and the release asset:
 
 ```bash
-uv run scripts/ckpt2onnx.py final0   # FP32 -> upload models/final0.onnx as beat_this.onnx release asset
-uv run scripts/ckpt2onnx.py small1   # small -> commit models/small1.onnx as beat_this_small.onnx
+uv run scripts/ckpt2onnx.py final0   # FP32 -> upload models/final0.onnx as the beat_this.onnx release asset
+uv run scripts/ckpt2onnx.py small1   # small -> commit  models/small1.onnx as beat_this_small.onnx
 ```
 
-Visit the [original repo](https://github.com/CPJKU/beat_this?tab=readme-ov-file#available-models) for available checkpoints.
+See the [original repo](https://github.com/CPJKU/beat_this#available-models) for available checkpoints.
 
-## Usage
+</details>
 
-### Command Line Interface
-
-**Default output (JSON to stdout)**:
+## Command-line usage
 
 ```bash
+# Default: print JSON to stdout
 beat-this input.wav
-```
 
-**Write JSON and beats files** (auto-named from input):
-
-```bash
+# Write auto-named output files (input.json, input.beats)
 beat-this input.wav --json --beats
-# → input.json, input.beats
-```
 
-**Write with explicit paths**:
-
-```bash
+# Explicit output paths
 beat-this input.wav --json=results.json --click=clicks.wav
+
+# Batch a directory (per-file JSON + a beat_this.json summary)
+beat-this ./music/ -r --json --beats --mix
+
+# Glob (quote it so the shell doesn't expand it)
+beat-this "music/**/*.mp3" --json
 ```
-
-**Use the small model**:
-
-```bash
-beat-this input.wav --model models/beat_this_small.onnx
-```
-
-**Batch processing a directory** (per-file JSON by default):
-
-```bash
-beat-this ./music-folder/
-# → writes <file>.json for each audio file + beat_this.json summary
-```
-
-**Batch with multiple output formats**:
-
-```bash
-beat-this ./music-folder/ -r --json --beats --mix
-# → writes <file>.json, <file>.beats, <file>.mix.wav per file + beat_this.json
-```
-
-**Batch with glob patterns** (quote to prevent shell expansion):
-
-```bash
-beat-this "music/**/*.mp3" --json --beats
-```
-
-### CLI Options
 
 | Option                  | Description                                                     |
 | ----------------------- | --------------------------------------------------------------- |
 | `<input>`               | Audio file, directory, or glob pattern                          |
-| `--json [FILE]`         | Write JSON output (default ext: `.json`)                        |
-| `--beats [FILE]`        | Write beats text file (default ext: `.beats`)                   |
-| `--click [FILE]`        | Write click-track WAV (default ext: `.click.wav`)               |
-| `--mix [FILE]`          | Write mixed audio WAV (default ext: `.mix.wav`)                 |
-| `--overwrite`           | Overwrite existing output files                                 |
-| `--mel [FILE]`          | Write mel spectrogram as numpy `.npy` (default ext: `.mel.npy`) |
+| `--json [=FILE]`        | Write JSON output (default ext: `.json`)                        |
+| `--beats [=FILE]`       | Write beats text file (default ext: `.beats`)                   |
+| `--click [=FILE]`       | Write click-track WAV (default ext: `.click.wav`)               |
+| `--mix [=FILE]`         | Write mixed audio WAV (default ext: `.mix.wav`)                 |
+| `--mel [=FILE]`         | Write mel spectrogram as numpy `.npy` (default ext: `.mel.npy`) |
 | `--model <PATH>`        | Beat model path (default: `models/beat_this.onnx`)              |
 | `--mel-model <PATH>`    | Mel model path (default: `models/mel_spectrogram.onnx`)         |
 | `--runtime <rten\|ort>` | Inference backend (default: `rten`)                             |
-| `-r, --recursive`       | Recurse into subdirectories                                     |
+| `--overwrite`           | Overwrite existing output files                                 |
+| `-r, --recursive`       | Recurse into subdirectories (batch mode)                        |
 | `-v, --verbose`         | Print timing for each stage                                     |
-| `--profile <PREFIX>`    | ORT profiling trace output                                      |
+| `--profile <PREFIX>`    | Write ORT profiling trace (ort runtime only)                    |
 
-### Rust API
+## Library usage
 
 ```rust
 use std::path::Path;
 use beat_this::{BeatThis, RtenRuntime};
 
-// Initialize with the pure-Rust runtime
+// Initialize with the pure-Rust runtime and your model paths.
 let mut bt = BeatThis::new(
     &RtenRuntime,
     Path::new("models/mel_spectrogram.onnx"),
     Path::new("models/beat_this.onnx"),
 )?;
 
-// Analyze an audio file
+// Analyze an audio file.
 let analysis = bt.analyze_file(Path::new("input.wav"))?;
 
-println!("Found {} beats, {} downbeats", analysis.beats.len(), analysis.downbeats.len());
-println!("Mel shape: {:?}", analysis.mel.shape); // [1, T, 128]
-for (i, &time) in analysis.beats.iter().enumerate() {
-    println!("Beat {}: {:.3}s", i, time);
+println!("{} beats, {} downbeats", analysis.beats.len(), analysis.downbeats.len());
+for (i, &t) in analysis.beats.iter().enumerate() {
+    println!("beat {i}: {t:.3}s");
 }
 ```
 
-## Output Formats
+`analysis.beats` / `analysis.downbeats` are beat times in seconds; `analysis.mel.shape`
+is `[1, T, 128]`. To use the ONNX Runtime backend instead, swap `&RtenRuntime` for
+`&OrtRuntime::default()` (requires the ONNX Runtime dylib — see [Install](#install)).
+
+## Output formats
 
 ### JSON (default)
 
@@ -218,87 +163,57 @@ for (i, &time) in analysis.beats.iter().enumerate() {
 }
 ```
 
-### Plain Text Beats (`--beats`)
+### Plain text (`--beats`)
 
-Tab-separated values with beat time and position within measure:
+Tab-separated `time<TAB>beat-number`, where `1` is a downbeat and `2`–`4` are other beats:
 
 ```
 0.340	4
 0.681	1
 1.023	2
-1.364	3
-1.705	4
-2.047	1
 ```
 
-- **Column 1**: Beat time in seconds
-- **Column 2**: Beat number (1 = downbeat, 2-4 = other beats)
+### Click track (`--click`)
 
-### Click Track (`--click`)
+44100 Hz mono WAV: 880 Hz sine on downbeats, 440 Hz on other beats, with ADSR shaping.
 
-Generated 44100 Hz mono WAV with:
+### Mixed audio (`--mix`)
 
-- **Downbeats**: 880 Hz sine wave
-- **Other beats**: 440 Hz sine wave
-- ADSR envelope shaping
+Original music (70%) blended with the click track (30%).
 
-### Mixed Audio (`--mix`)
+## How it works
 
-Combines the original audio with the click track:
+The pipeline has four stages:
 
-- **Original music**: 70% volume
-- **Click track**: 30% volume
+1. **Audio** — decode (symphonia: WAV/MP3/FLAC/OGG) and resample (rubato) to 22050 Hz mono.
+2. **Mel spectrogram** — a 128-band log-mel front end computed by an ONNX model.
+3. **Beat inference** — a transformer runs over overlapping 1500-frame (30 s) chunks.
+4. **Post-processing** — peak picking, deduplication, and downbeat-to-beat snapping.
 
-## Project Structure
-
-```
-beat-this-rs/
-├── src/
-│   ├── lib.rs                # Public API (BeatThis struct)
-│   ├── main.rs               # CLI application
-│   ├── audio.rs              # Audio loading and resampling
-│   ├── mel.rs                # Mel spectrogram computation
-│   ├── inference.rs          # Chunked beat/downbeat inference
-│   ├── postprocessing.rs     # Peak detection, deduplication, snapping
-│   ├── output.rs             # JSON, WAV, click track generation
-│   └── runtime/
-│       ├── mod.rs            # Runtime trait abstractions
-│       ├── ort.rs            # ONNX Runtime backend (CoreML on macOS)
-│       └── rten.rs           # Pure-Rust backend
-├── models/                   # ONNX models (mel + small beat model committed; FP32 downloaded)
-├── tests/                    # Integration tests
-└── Cargo.toml
-```
-
-## Model Details
-
-- **Architecture**: Transformer-based neural network
-- **Input**: 128-dimensional Mel spectrograms
-- **Output**: Beat and downbeat probability logits
-- **Processing**: Overlapping chunks of 1500 frames (30 seconds at 50 fps)
-- **Standard model**: ~83 MB (32-bit float)
-- **Small model**: ~10 MB
+The beat model takes 128-dim mel spectrograms and emits beat/downbeat logits. The
+**standard** model is ~83 MB (FP32); the **small** model is ~10 MB.
 
 ## Performance
 
-Benchmarked on Apple M4 MacBook Pro (2024), comparing against the Python reference implementation (PyTorch, CPU mode, no DBN post-processing):
+Apple M4 MacBook Pro (2024), vs. the Python reference (PyTorch, CPU, no DBN):
 
 | File      | Duration | Python | Rust (rten) | Rust (ort) |
 | --------- | -------: | -----: | ----------: | ---------: |
-| short.wav |       9s |   1.8s |        0.7s |       1.2s |
-| test1.mp3 |     4:32 |   5.1s |        4.6s |       4.6s |
-| test2.mp3 |    13:48 |  11.9s |       12.1s |      11.9s |
+| short.wav |      9 s |  1.8 s |       0.7 s |      1.2 s |
+| test1.mp3 |     4:32 |  5.1 s |       4.6 s |      4.6 s |
+| test2.mp3 |    13:48 | 11.9 s |      12.1 s |     11.9 s |
 
-Both Rust runtimes produce identical beat timestamps. The `rten` backend (pure Rust, no external dependencies) performs on par with `ort` (ONNX Runtime). Processing time is dominated by beat inference, which scales linearly with audio duration.
-
-To run the benchmarks yourself:
-
-```bash
-uv run scripts/integration-test.py
-```
+Both Rust backends produce identical timestamps and perform on par with each other.
+Runtime is dominated by beat inference, which scales linearly with audio duration.
 
 ## Acknowledgments
 
-- **Original Beat This! Implementation**: This Rust port is based on the Beat This! model from Johannes Kepler University Linz. See the [original repository](https://github.com/CPJKU/beat_this) for the research paper and licensing terms.
-- **C++ Port**: [beat_this_cpp](https://github.com/mosynthkey/beat_this_cpp) by mosynthkey, which served as a reference for this implementation.
-- **Dependencies**: rten, ort, symphonia, rubato, and the broader Rust ecosystem.
+- **Beat This!** by Johannes Kepler University Linz — see the [original repo](https://github.com/CPJKU/beat_this) for the paper and licensing.
+- **[beat_this_cpp](https://github.com/mosynthkey/beat_this_cpp)** by mosynthkey, a reference for this port.
+- Built on rten, ort, symphonia, rubato, and the broader Rust ecosystem.
+
+## License
+
+[MIT](LICENSE). This is a Rust port of "Beat This!", which is also MIT-licensed; the
+[LICENSE](LICENSE) file retains both the original (Institute of Computational Perception,
+JKU Linz) and the port's copyright notices.
