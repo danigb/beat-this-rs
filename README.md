@@ -59,37 +59,18 @@ their paths explicitly:
 beat-this input.mp3 --model beat_this.onnx --mel-model mel_spectrogram.onnx
 ```
 
-**As a library** — add it to your `Cargo.toml`:
+Two models are committed to the repository, so the test suite and a basic run work
+with **no setup**:
 
-```toml
-[dependencies]
-beat-this = "0.3"
-```
+- `models/mel_spectrogram.onnx` (~270 KB) — log-mel front end.
+- `models/beat_this_small.onnx` (~10 MB) — small beat model used by the test suite
+  and a good default for quick runs.
 
-**The `ort` backend** is optional and only needed if you run with `--runtime ort`. It
-loads ONNX Runtime dynamically at runtime:
-
-```bash
-brew install onnxruntime          # macOS — or grab a release from
-                                  # https://github.com/microsoft/onnxruntime/releases
-```
-
-## Models
-
-Three ONNX files drive the pipeline. Two are committed, so the test suite and quick runs
-work with **no setup**:
-
-| File                          |    Size | Source               | Use                                   |
-| ----------------------------- | ------: | -------------------- | ------------------------------------- |
-| `models/mel_spectrogram.onnx` | ~270 KB | committed            | log-mel front end (always needed)     |
-| `models/beat_this_small.onnx` |  ~10 MB | committed            | small beat model — quick runs & tests |
-| `models/beat_this.onnx`       |  ~83 MB | `download-models.sh` | full FP32 beat model — best accuracy  |
-
-`download-models.sh` fetches the FP32 model from GitHub Releases with `curl` and verifies
-its SHA-256 — no Python:
+The full-accuracy FP32 beat model (`beat_this.onnx`, ~83 MB) is **not** committed.
+Fetch it from GitHub Releases with `curl` (no Python):
 
 ```bash
-./scripts/download-models.sh
+./scripts/download-models.sh        # downloads + checksum-verifies models/beat_this.onnx
 ```
 
 <details>
