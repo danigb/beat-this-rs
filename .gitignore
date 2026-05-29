@@ -9,3 +9,4 @@ models/*
 *.wav
 *.beats
 onnxruntime
+__pycache__/

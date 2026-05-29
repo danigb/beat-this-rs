@@ -4,7 +4,7 @@
 #     "torch>=2.0",
 #     "soxr",
 #     "soundfile",
-#     "beat-this @ https://github.com/CPJKU/beat_this/archive/main.zip",
+#     "beat-this @ https://github.com/CPJKU/beat_this/archive/b95c8ab0c58c2d9fcfd40508ae8dffbc05ac4f5c.zip",
 # ]
 # ///
 """Maintainer tool: generate the Python-reference golden beats/downbeats for the
@@ -24,7 +24,6 @@ Usage:
 """
 
 import json
-import subprocess
 import sys
 from pathlib import Path
 
@@ -33,19 +32,11 @@ from beat_this.inference import File2Beats
 ROOT = Path(__file__).resolve().parent.parent
 MP3 = ROOT / "test_files" / "It Don't Mean A Thing - Kings of Swing.mp3"
 
-
-def beat_this_commit() -> str:
-    try:
-        import beat_this
-
-        pkg = Path(beat_this.__file__).resolve().parent.parent
-        return subprocess.check_output(
-            ["git", "-C", str(pkg), "rev-parse", "HEAD"],
-            text=True,
-            stderr=subprocess.DEVNULL,
-        ).strip()
-    except Exception:
-        return "unknown"
+# Frozen beat_this reference the goldens are built from. Keep this in sync with the
+# pinned commit in the `# /// script` dependency URL above. uv fetches the package
+# from a zip (not a git checkout), so we record the pinned commit directly rather
+# than deriving it via `git rev-parse`.
+BEAT_THIS_COMMIT = "b95c8ab0c58c2d9fcfd40508ae8dffbc05ac4f5c"
 
 
 def beat_this_version() -> str:
@@ -75,7 +66,7 @@ def main():
                     "checkpoint": checkpoint,
                     "audio": MP3.name,
                     "beat_this_version": beat_this_version(),
-                    "beat_this_commit": beat_this_commit(),
+                    "beat_this_commit": BEAT_THIS_COMMIT,
                     "postprocessing": "minimal",
                     "fps": 50,
                     "command": f"uv run scripts/gen_golden.py {checkpoint} {out}",
