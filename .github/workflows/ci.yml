@@ -10,6 +10,7 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Default build: pure-Rust rten backend, no system libraries.
   check:
     runs-on: ubuntu-latest
     steps:
@@ -18,13 +19,27 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-      - name: Install ONNX Runtime (for ort + cross-runtime tests)
+      - run: cargo fmt --check
+      - run: cargo clippy -- -D warnings
+      - run: cargo test
+
+  # Opt-in ort backend: exercises the feature so it can't bit-rot.
+  # libonnxruntime must match the API version ort expects (an older runtime
+  # makes ort deadlock during init).
+  ort:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Install ONNX Runtime
         run: |
           ORT_VERSION=1.22.0
           curl -fL --retry 3 -o ort.tgz \
             "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-linux-x64-${ORT_VERSION}.tgz"
           tar xzf ort.tgz
           echo "ORT_DYLIB_PATH=${PWD}/onnxruntime-linux-x64-${ORT_VERSION}/lib/libonnxruntime.so" >> "$GITHUB_ENV"
-      - run: cargo fmt --check
-      - run: cargo clippy -- -D warnings
-      - run: cargo test
+      - run: cargo clippy --features ort -- -D warnings
+      - run: cargo test --features ort

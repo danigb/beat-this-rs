@@ -15,8 +15,10 @@ Ported with [Claude](https://claude.ai/).
 
 ## Features
 
-- **Pure-Rust by default** — the `rten` backend needs no system libraries; `ort` (ONNX
-  Runtime, CoreML on macOS) is available as an opt-in backend.
+- **Pure-Rust by default** — the `rten` backend needs no system libraries. An `ort`
+  (ONNX Runtime) backend is available behind the `ort` Cargo feature
+  (`--features ort`) for cross-runtime validation and profiling; it requires
+  `libonnxruntime` at runtime.
 - **Bundled small model** — clone and run with zero setup; download the full-accuracy
   model when you need it.
 - **CLI + library** — a `beat-this` binary and a clean `beat_this` crate API.
@@ -96,6 +98,19 @@ prerequisite.
 
 </details>
 
+### Optional: the `ort` backend
+
+The default build uses the pure-Rust `rten` runtime and needs no system libraries. To
+also build the ONNX Runtime backend (for `--runtime ort` and `--profile`), enable the
+`ort` feature:
+
+```bash
+cargo build --release --features ort
+```
+
+It loads `libonnxruntime` at runtime — install it (`brew install onnxruntime` on macOS)
+or point `ORT_DYLIB_PATH` at the shared library.
+
 ## Command-line usage
 
 ```bash
@@ -115,21 +130,21 @@ beat-this ./music/ -r --json --beats --mix
 beat-this "music/**/*.mp3" --json
 ```
 
-| Option                  | Description                                                     |
-| ----------------------- | --------------------------------------------------------------- |
-| `<input>`               | Audio file, directory, or glob pattern                          |
-| `--json [=FILE]`        | Write JSON output (default ext: `.json`)                        |
-| `--beats [=FILE]`       | Write beats text file (default ext: `.beats`)                   |
-| `--click [=FILE]`       | Write click-track WAV (default ext: `.click.wav`)               |
-| `--mix [=FILE]`         | Write mixed audio WAV (default ext: `.mix.wav`)                 |
-| `--mel [=FILE]`         | Write mel spectrogram as numpy `.npy` (default ext: `.mel.npy`) |
-| `--model <PATH>`        | Beat model path (default: `models/beat_this.onnx`)              |
-| `--mel-model <PATH>`    | Mel model path (default: `models/mel_spectrogram.onnx`)         |
-| `--runtime <rten\|ort>` | Inference backend (default: `rten`)                             |
-| `--overwrite`           | Overwrite existing output files                                 |
-| `-r, --recursive`       | Recurse into subdirectories (batch mode)                        |
-| `-v, --verbose`         | Print timing for each stage                                     |
-| `--profile <PREFIX>`    | Write ORT profiling trace (ort runtime only)                    |
+| Option                  | Description                                                       |
+| ----------------------- | ----------------------------------------------------------------- |
+| `<input>`               | Audio file, directory, or glob pattern                            |
+| `--json [=FILE]`        | Write JSON output (default ext: `.json`)                          |
+| `--beats [=FILE]`       | Write beats text file (default ext: `.beats`)                     |
+| `--click [=FILE]`       | Write click-track WAV (default ext: `.click.wav`)                 |
+| `--mix [=FILE]`         | Write mixed audio WAV (default ext: `.mix.wav`)                   |
+| `--mel [=FILE]`         | Write mel spectrogram as numpy `.npy` (default ext: `.mel.npy`)   |
+| `--model <PATH>`        | Beat model path (default: `models/beat_this.onnx`)                |
+| `--mel-model <PATH>`    | Mel model path (default: `models/mel_spectrogram.onnx`)           |
+| `--runtime <rten\|ort>` | Inference backend (default: `rten`; `ort` needs `--features ort`) |
+| `--overwrite`           | Overwrite existing output files                                   |
+| `-r, --recursive`       | Recurse into subdirectories (batch mode)                          |
+| `-v, --verbose`         | Print timing for each stage                                       |
+| `--profile <PREFIX>`    | Write ORT profiling trace (requires `--features ort`)             |
 
 ## Library usage
 

@@ -1,25 +1,13 @@
-use std::panic::AssertUnwindSafe;
 use std::path::Path;
 
-use beat_this::{BeatThis, OrtRuntime};
+use beat_this::{BeatThis, RtenRuntime};
 
 const MEL_MODEL_PATH: &str = "models/mel_spectrogram.onnx";
 const BEAT_MODEL_PATH: &str = "models/beat_this_small.onnx";
 const TEST_AUDIO_PATH: &str = "test_files/It Don't Mean A Thing - Kings of Swing.mp3";
 
-/// Check if the ORT dynamic library is available at runtime.
-/// ort with `load-dynamic` panics if the dylib isn't found, so we use catch_unwind.
-fn ort_is_available() -> bool {
-    std::panic::catch_unwind(AssertUnwindSafe(|| {
-        let rt = OrtRuntime::default();
-        let _ = rt.is_coreml_available();
-    }))
-    .is_ok()
-}
-
 fn skip_if_missing() -> bool {
-    !ort_is_available()
-        || !Path::new(MEL_MODEL_PATH).exists()
+    !Path::new(MEL_MODEL_PATH).exists()
         || !Path::new(BEAT_MODEL_PATH).exists()
         || !Path::new(TEST_AUDIO_PATH).exists()
 }
@@ -31,7 +19,7 @@ fn test_analyze_file() {
         return;
     }
 
-    let runtime = OrtRuntime::default();
+    let runtime = RtenRuntime;
     let mut bt = BeatThis::new(
         &runtime,
         Path::new(MEL_MODEL_PATH),
@@ -96,7 +84,7 @@ fn test_analyze_audio() {
         return;
     }
 
-    let runtime = OrtRuntime::default();
+    let runtime = RtenRuntime;
     let mut bt = BeatThis::new(
         &runtime,
         Path::new(MEL_MODEL_PATH),
@@ -143,7 +131,7 @@ fn test_analyze_audio_different_sample_rate() {
         return;
     }
 
-    let runtime = OrtRuntime::default();
+    let runtime = RtenRuntime;
     let mut bt = BeatThis::new(
         &runtime,
         Path::new(MEL_MODEL_PATH),

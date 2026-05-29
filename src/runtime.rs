@@ -1,3 +1,4 @@
+#[cfg(feature = "ort")]
 pub mod ort;
 
 pub mod rten;

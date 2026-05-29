@@ -1,3 +1,6 @@
+#![cfg(feature = "ort")]
+//! Requires the `ort` feature (and libonnxruntime at runtime).
+
 use std::panic::AssertUnwindSafe;
 use std::path::Path;
 
