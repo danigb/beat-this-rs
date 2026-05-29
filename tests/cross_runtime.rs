@@ -1,7 +1,10 @@
 use std::panic::AssertUnwindSafe;
 use std::path::Path;
 
-use beat_this::{Model, OrtRuntime, RtenRuntime, Runtime, Tensor};
+use beat_this::{BeatThis, Model, OrtRuntime, RtenRuntime, Runtime, Tensor};
+
+mod common;
+use common::f_measure;
 
 /// Check if the ORT dynamic library is available at runtime.
 /// ort with `load-dynamic` panics if the dylib isn't found, so we use catch_unwind.
@@ -15,6 +18,7 @@ fn ort_is_available() -> bool {
 
 const MEL_MODEL_PATH: &str = "models/mel_spectrogram.onnx";
 const BEAT_MODEL_PATH: &str = "models/beat_this_small.onnx";
+const TEST_AUDIO_PATH: &str = "test_files/It Don't Mean A Thing - Kings of Swing.mp3";
 
 /// Run mel inference through both backends and compare output shapes and values.
 #[test]
@@ -129,4 +133,66 @@ fn test_cross_runtime_beat() {
             max_diff
         );
     }
+}
+
+/// rten and ort must agree on real-signal beat/downbeat timestamps — the enforced
+/// cross-runtime parity invariant — not just on all-zero tensors.
+///
+/// Agreement is scored with the standard +/-70 ms MIR F-measure (with ort as the
+/// reference) rather than exact equality: on the small structural model a few
+/// logit peaks sit right at the `logit > 0` threshold where the two float backends
+/// can differ by an epsilon and tip a peak in/out (the same sub-MIR effect the
+/// Python parity test documents). The exact counts and max timestamp diff are
+/// logged for regression visibility.
+#[test]
+fn test_cross_runtime_real_signal() {
+    if !ort_is_available()
+        || !Path::new(MEL_MODEL_PATH).exists()
+        || !Path::new(BEAT_MODEL_PATH).exists()
+        || !Path::new(TEST_AUDIO_PATH).exists()
+    {
+        eprintln!("Skipping test: required files / ORT not available");
+        return;
+    }
+
+    let rten = RtenRuntime;
+    let mut bt_rten = BeatThis::new(&rten, Path::new(MEL_MODEL_PATH), Path::new(BEAT_MODEL_PATH))
+        .expect("Failed to build rten pipeline");
+    let r = bt_rten
+        .analyze_file(Path::new(TEST_AUDIO_PATH))
+        .expect("rten analyze_file failed");
+
+    let ort = OrtRuntime::default();
+    let mut bt_ort = BeatThis::new(&ort, Path::new(MEL_MODEL_PATH), Path::new(BEAT_MODEL_PATH))
+        .expect("Failed to build ort pipeline");
+    let o = bt_ort
+        .analyze_file(Path::new(TEST_AUDIO_PATH))
+        .expect("ort analyze_file failed");
+
+    let beats = f_measure(&o.beats, &r.beats, 0.070);
+    let downbeats = f_measure(&o.downbeats, &r.downbeats, 0.070);
+    eprintln!(
+        "cross-runtime real signal beats: F={:.4} rten {} vs ort {} matched {} max_diff={:.1}ms",
+        beats.f_measure,
+        r.beats.len(),
+        o.beats.len(),
+        beats.matched,
+        beats.max_matched_diff * 1000.0,
+    );
+    eprintln!(
+        "cross-runtime real signal downbeats: F={:.4} rten {} vs ort {} matched {} max_diff={:.1}ms",
+        downbeats.f_measure, r.downbeats.len(), o.downbeats.len(), downbeats.matched,
+        downbeats.max_matched_diff * 1000.0,
+    );
+
+    assert!(
+        beats.f_measure >= 0.99,
+        "rten vs ort beat F-measure {:.4} < 0.99",
+        beats.f_measure
+    );
+    assert!(
+        downbeats.f_measure >= 0.99,
+        "rten vs ort downbeat F-measure {:.4} < 0.99",
+        downbeats.f_measure
+    );
 }
