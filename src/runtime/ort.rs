@@ -3,6 +3,15 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use ndarray::ArrayD;
+
+/// Convert an `ort::Error<R>` into `anyhow::Error`.
+///
+/// As of ort 2.0.0-rc.12, `ort::Error` is generic over the builder/recovery
+/// type `R`, which is not `Send + Sync`, so it can no longer be converted into
+/// `anyhow::Error` via `?`. We flatten it to its `Display` string instead.
+fn ort_err<R>(e: ort::Error<R>) -> anyhow::Error {
+    anyhow::anyhow!(e.to_string())
+}
 use ort::ep::{CoreML, ExecutionProvider};
 use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
@@ -54,14 +63,18 @@ impl Runtime for OrtRuntime {
             GraphOptimizationLevel::Level3 => GraphOptimizationLevel::Level3,
             GraphOptimizationLevel::All => GraphOptimizationLevel::All,
         };
-        let mut builder = Session::builder()?
-            .with_optimization_level(optimization_level)?
-            .with_intra_threads(self.intra_threads)?
-            .with_execution_providers([CoreML::default().build()])?;
+        let mut builder = Session::builder()
+            .map_err(ort_err)?
+            .with_optimization_level(optimization_level)
+            .map_err(ort_err)?
+            .with_intra_threads(self.intra_threads)
+            .map_err(ort_err)?
+            .with_execution_providers([CoreML::default().build()])
+            .map_err(ort_err)?;
         if let Some(ref profile_path) = self.profiling_path {
-            builder = builder.with_profiling(profile_path)?;
+            builder = builder.with_profiling(profile_path).map_err(ort_err)?;
         }
-        let session = builder.commit_from_file(path)?;
+        let session = builder.commit_from_file(path).map_err(ort_err)?;
         Ok(OrtModel { session })
     }
 }
@@ -74,7 +87,7 @@ pub struct OrtModel {
 impl OrtModel {
     /// End profiling and flush the trace JSON file. Returns the profile file path.
     pub fn end_profiling(&mut self) -> Result<String> {
-        Ok(self.session.end_profiling()?)
+        self.session.end_profiling().map_err(ort_err)
     }
 }
 
@@ -86,7 +99,7 @@ impl Model for OrtModel {
             .map(|(name, tensor)| {
                 let shape: Vec<usize> = tensor.shape.clone();
                 let array = ArrayD::from_shape_vec(shape, tensor.data.clone())?;
-                let value: DynValue = Value::from_array(array)?.into_dyn();
+                let value: DynValue = Value::from_array(array).map_err(ort_err)?.into_dyn();
                 Ok((name.to_string(), value))
             })
             .collect::<Result<Vec<_>>>()?;
@@ -97,12 +110,12 @@ impl Model for OrtModel {
             .map(|(name, value)| (name.as_str(), value))
             .collect();
 
-        let outputs = self.session.run(input_refs)?;
+        let outputs = self.session.run(input_refs).map_err(ort_err)?;
 
         // Convert outputs to Tensor map
         let mut result = HashMap::new();
         for (name, value) in outputs.iter() {
-            let (shape, data) = value.try_extract_tensor::<f32>()?;
+            let (shape, data) = value.try_extract_tensor::<f32>().map_err(ort_err)?;
             let tensor = Tensor {
                 shape: shape.iter().map(|&d| d as usize).collect(),
                 data: data.to_vec(),

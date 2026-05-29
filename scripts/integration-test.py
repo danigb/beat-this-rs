@@ -1,14 +1,7 @@
 # /// script
 # requires-python = ">=3.10"
 # dependencies = [
-#     "einops==0.8.0",
-#     "numpy==1.26.4",
-#     "rotary_embedding_torch==0.6.4",
-#     "soundfile",
-#     "soxr==0.3.7",
-#     "torch==2.3.1",
-#     "torchaudio==2.3.1",
-#     "tqdm==4.66.4",
+#     "beat-this @ https://github.com/CPJKU/beat_this/archive/main.zip",
 # ]
 # ///
 """
@@ -17,6 +10,10 @@ Integration test: compare Python and Rust beat-this implementations.
 Builds the Rust binary, runs both Rust runtimes (rten and ort) against the
 Python reference on all audio files in integration_test_files/, compares
 outputs, and reports timing.
+
+Maintainer-only. The Python reference is pulled in via uv from the `beat-this`
+package declared above (which brings its own transitive deps), so this runs
+self-contained with no venv/pip — just uv.
 
 Usage:
     uv run scripts/integration-test.py
@@ -31,7 +28,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 AUDIO_DIR = ROOT / "integration_test_files"
 RUST_BINARY = ROOT / "target" / "release" / "beat-this"
-PYTHON_CLI = ROOT / "references" / "beat_this" / "beat_this" / "cli.py"
 AUDIO_EXTENSIONS = {".mp3", ".wav", ".flac", ".ogg"}
 TIMESTAMP_TOLERANCE = 0.02  # seconds
 RUST_RUNTIMES = ["rten", "ort"]
@@ -66,26 +62,22 @@ def discover_audio_files():
 
 
 def run_python(audio_path: Path, output_path: Path):
-    """Run Python beat_this and return elapsed seconds."""
-    env = {
-        "PYTHONPATH": str(ROOT / "references" / "beat_this"),
-        "PATH": subprocess.os.environ.get("PATH", ""),
-    }
-    # Inherit common env vars needed for Python/torch
-    for key in ("HOME", "USER", "VIRTUAL_ENV", "CONDA_PREFIX", "CUDA_VISIBLE_DEVICES"):
-        if key in subprocess.os.environ:
-            env[key] = subprocess.os.environ[key]
+    """Run the Python beat_this reference and return elapsed seconds.
 
+    Invoked as `python -m beat_this.cli` against the uv-managed interpreter, which
+    has `beat-this` (and its transitive deps) installed via the inline metadata
+    above — no PYTHONPATH or local checkout required.
+    """
     cmd = [
         sys.executable,
-        str(PYTHON_CLI),
+        "-m", "beat_this.cli",
         str(audio_path),
         "-o", str(output_path),
         "--no-dbn",
         "--gpu", "-1",
     ]
     start = time.perf_counter()
-    result = subprocess.run(cmd, env=env, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True)
     elapsed = time.perf_counter() - start
 
     if result.returncode != 0:

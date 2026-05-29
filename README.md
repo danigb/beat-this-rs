@@ -90,6 +90,12 @@ uv run scripts/ckpt2onnx.py small1   # small -> commit  models/small1.onnx as be
 
 See the [original repo](https://github.com/CPJKU/beat_this#available-models) for available checkpoints.
 
+Every maintainer script under `scripts/*.py` is a self-contained
+[PEP 723](https://peps.python.org/pep-0723/) script with its dependencies declared
+inline, run as `uv run scripts/<name>.py …` — no virtualenv, `pip`, or
+`requirements.txt`. Installing [uv](https://docs.astral.sh/uv/) is the only
+prerequisite.
+
 </details>
 
 ### Optional: the `ort` backend
@@ -208,6 +214,28 @@ The pipeline has four stages:
 The beat model takes 128-dim mel spectrograms and emits beat/downbeat logits. The
 **standard** model is ~83 MB (FP32); the **small** model is ~10 MB.
 
+## Parity with the Python reference
+
+Parity with the original Python [`beat_this`](https://github.com/CPJKU/beat_this) is
+**verified by a committed test** (`tests/python_parity.rs`), not just argued by
+construction. It runs the full Rust pipeline on a shared audio file and compares the
+beat/downbeat times to a golden generated from the Python reference on the matching
+model, scored with the standard ±70 ms MIR F-measure:
+
+- **Standard FP32 model:** F-measure == **1.0** for both beats and downbeats — the
+  Rust port is faithful to the reference within MIR tolerance.
+- **Small model (always-on, runs on a fresh clone with no download):** F-measure ≥
+  **0.99**. The small structural model has a handful of logit peaks sitting right at
+  the decision threshold, where the pure-Rust `rten` backend and PyTorch differ by an
+  epsilon and tip a peak in or out — an irreducible, sub-MIR float difference, not a
+  pipeline divergence.
+
+Known, bounded, sub-MIR divergences from the reference: the resampler (`rubato` sinc
+vs Python `soxr`, only affects inputs not already at 22050 Hz) and a ≤10 ms rounding
+of merged adjacent peaks. Regenerate the golden fixtures with
+`scripts/gen_golden.py` (maintainer-only) if the checkpoint or the mel/inference
+graph changes; see `tests/fixtures/README.md` for provenance.
+
 ## Performance
 
 Apple M4 MacBook Pro (2024), vs. the Python reference (PyTorch, CPU, no DBN):
@@ -218,7 +246,8 @@ Apple M4 MacBook Pro (2024), vs. the Python reference (PyTorch, CPU, no DBN):
 | test1.mp3 |     4:32 |  5.1 s |       4.6 s |      4.6 s |
 | test2.mp3 |    13:48 | 11.9 s |      12.1 s |     11.9 s |
 
-Both Rust backends produce identical timestamps and perform on par with each other.
+The two Rust backends agree on timestamps within MIR tolerance (verified on a real
+signal by `tests/cross_runtime.rs`) and perform on par with each other.
 Runtime is dominated by beat inference, which scales linearly with audio duration.
 
 ## Acknowledgments
