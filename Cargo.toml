@@ -51,3 +51,11 @@ tempfile = "3"
 [profile.release]
 lto = true
 strip = true
+
+# Optimize dependencies (notably the pure-Rust `rten` inference backend) even in
+# dev/test builds. `cargo test` is unoptimized, which makes rten's float math
+# orders of magnitude slower — without this, the rten integration tests take ~30
+# min in CI. This keeps our own crate at debug opt-level (fast incremental builds,
+# debug assertions) while compiling deps with full optimization.
+[profile.dev.package."*"]
+opt-level = 3
