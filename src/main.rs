@@ -8,9 +8,9 @@ use clap::Parser;
 use hound::{SampleFormat, WavSpec, WavWriter};
 use serde::Serialize;
 
-use beat_this::{
-    beat_counts, calculate_bpm, BeatAnalysis, Model, OrtRuntime, RtenRuntime, Runtime as _,
-};
+use beat_this::{beat_counts, calculate_bpm, BeatAnalysis, Model, RtenRuntime};
+#[cfg(feature = "ort")]
+use beat_this::{OrtRuntime, Runtime as _};
 
 const DEFAULT_MODEL_PATH: &str = "models/beat_this.onnx";
 const DEFAULT_MEL_MODEL_PATH: &str = "models/mel_spectrogram.onnx";
@@ -70,12 +70,14 @@ struct Cli {
     verbose: bool,
 
     /// Enable ORT profiling and write trace JSON to this prefix
+    #[cfg(feature = "ort")]
     #[arg(long = "profile")]
     profile: Option<String>,
 }
 
 #[derive(Clone, clap::ValueEnum)]
 enum RuntimeChoice {
+    #[cfg(feature = "ort")]
     Ort,
     Rten,
 }
@@ -784,6 +786,7 @@ fn main() -> Result<()> {
     let t = Instant::now();
 
     match cli.runtime {
+        #[cfg(feature = "ort")]
         RuntimeChoice::Ort => {
             let runtime = OrtRuntime::default();
             if cli.verbose {
@@ -836,6 +839,7 @@ fn main() -> Result<()> {
             if cli.verbose {
                 eprintln!("[info] Runtime: rten (pure Rust)");
             }
+            #[cfg(feature = "ort")]
             if cli.profile.is_some() {
                 eprintln!(
                     "[warn] Profiling is only supported with the ort runtime, ignoring --profile"

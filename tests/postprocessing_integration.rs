@@ -1,28 +1,13 @@
-use std::panic::AssertUnwindSafe;
 use std::path::Path;
 
-use beat_this::{BeatThis, OrtRuntime};
+use beat_this::{BeatThis, RtenRuntime};
 
 const MEL_MODEL_PATH: &str = "models/mel_spectrogram.onnx";
 const BEAT_MODEL_PATH: &str = "models/beat_this_small.onnx";
 const TEST_AUDIO_PATH: &str = "test_files/It Don't Mean A Thing - Kings of Swing.mp3";
 
-/// Check if the ORT dynamic library is available at runtime.
-fn ort_is_available() -> bool {
-    std::panic::catch_unwind(AssertUnwindSafe(|| {
-        let rt = OrtRuntime::default();
-        let _ = rt.is_coreml_available();
-    }))
-    .is_ok()
-}
-
 #[test]
 fn test_full_pipeline_peak_picking() {
-    if !ort_is_available() {
-        eprintln!("Skipping test: ORT runtime not available");
-        return;
-    }
-
     let mel_path = Path::new(MEL_MODEL_PATH);
     let beat_path = Path::new(BEAT_MODEL_PATH);
     let audio_path = Path::new(TEST_AUDIO_PATH);
@@ -32,7 +17,7 @@ fn test_full_pipeline_peak_picking() {
         return;
     }
 
-    let runtime = OrtRuntime::default();
+    let runtime = RtenRuntime;
     let mut bt = BeatThis::new(&runtime, mel_path, beat_path).expect("Failed to create BeatThis");
 
     let audio = beat_this::load_audio(audio_path, 22050).expect("Failed to load audio");

@@ -12,7 +12,9 @@ use anyhow::Result;
 
 pub use audio::{load_audio, AudioData};
 pub use output::{beat_counts, calculate_bpm};
-pub use runtime::{ort::OrtRuntime, rten::RtenRuntime, Model, Runtime, Tensor};
+#[cfg(feature = "ort")]
+pub use runtime::ort::OrtRuntime;
+pub use runtime::{rten::RtenRuntime, Model, Runtime, Tensor};
 
 use inference::BeatPredictor;
 use mel::MelExtractor;
