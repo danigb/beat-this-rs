@@ -1,16 +1,17 @@
 use anyhow::{anyhow, Result};
+use rubato::audioadapter_buffers::direct::InterleavedSlice;
 use rubato::{
-    Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction,
+    Async, FixedAsync, Resampler, SincInterpolationParameters, SincInterpolationType,
+    WindowFunction,
 };
 use std::fs::File;
 use std::path::Path;
-use symphonia::core::audio::SampleBuffer;
-use symphonia::core::codecs::{DecoderOptions, CODEC_TYPE_NULL};
+use symphonia::core::codecs::audio::AudioDecoderOptions;
 use symphonia::core::errors::Error;
-use symphonia::core::formats::FormatOptions;
+use symphonia::core::formats::probe::Hint;
+use symphonia::core::formats::{FormatOptions, TrackType};
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
-use symphonia::core::probe::Hint;
 
 /// Mono audio data at a known sample rate.
 pub struct AudioData {
@@ -46,50 +47,48 @@ fn decode(path: &Path) -> Result<(Vec<f32>, u32, usize)> {
         hint.with_extension(ext);
     }
 
-    let probed = symphonia::default::get_probe().format(
+    let mut format = symphonia::default::get_probe().probe(
         &hint,
         mss,
-        &FormatOptions::default(),
-        &MetadataOptions::default(),
+        FormatOptions::default(),
+        MetadataOptions::default(),
     )?;
-    let mut format = probed.format;
 
     let track = format
-        .tracks()
-        .iter()
-        .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
+        .first_track_known_codec(TrackType::Audio)
         .ok_or_else(|| anyhow!("no supported audio tracks"))?;
-
     let track_id = track.id;
-    let mut decoder =
-        symphonia::default::get_codecs().make(&track.codec_params, &DecoderOptions::default())?;
+    let codec_params = track
+        .codec_params
+        .as_ref()
+        .and_then(|p| p.audio())
+        .ok_or_else(|| anyhow!("audio track missing codec parameters"))?;
+
+    let mut decoder = symphonia::default::get_codecs()
+        .make_audio_decoder(codec_params, &AudioDecoderOptions::default())?;
 
     let mut samples: Vec<f32> = Vec::new();
+    let mut scratch: Vec<f32> = Vec::new();
     let mut source_sr = 0u32;
     let mut channels = 0usize;
 
-    loop {
-        let packet = match format.next_packet() {
-            Ok(packet) => packet,
-            Err(Error::IoError(_)) => break,
-            Err(err) => return Err(anyhow!(err)),
-        };
-
-        if packet.track_id() != track_id {
+    // `next_packet` returns `Ok(None)` at end of stream in symphonia 0.6.
+    while let Some(packet) = format.next_packet()? {
+        if packet.track_id != track_id {
             continue;
         }
 
         match decoder.decode(&packet) {
             Ok(decoded) => {
-                let spec = *decoded.spec();
-                source_sr = spec.rate;
-                channels = spec.channels.count();
+                let spec = decoded.spec();
+                source_sr = spec.rate();
+                channels = spec.channels().count();
 
-                let mut sample_buf = SampleBuffer::<f32>::new(decoded.capacity() as u64, spec);
-                sample_buf.copy_interleaved_ref(decoded);
-                samples.extend_from_slice(sample_buf.samples());
+                // `copy_to_vec_interleaved` resizes `scratch` to exactly this
+                // packet's sample count, so we append it to the running buffer.
+                decoded.copy_to_vec_interleaved(&mut scratch);
+                samples.extend_from_slice(&scratch);
             }
-            Err(Error::IoError(_)) => break,
             Err(Error::DecodeError(_)) => (), // skip corrupted packets
             Err(err) => return Err(anyhow!(err)),
         }
@@ -128,16 +127,24 @@ pub fn resample(samples: Vec<f32>, source_sr: u32, target_sr: u32) -> Result<Vec
         window: WindowFunction::BlackmanHarris2,
     };
 
-    let mut resampler = SincFixedIn::<f32>::new(
+    // rubato 3.0: `SincFixedIn` became `Async` with `FixedAsync::Input`. We
+    // process the whole buffer in a single call (chunk_size = input length),
+    // matching the previous one-shot behavior.
+    let frames = samples.len();
+    let mut resampler = Async::<f32>::new_sinc(
         target_sr as f64 / source_sr as f64,
         2.0,
-        params,
-        samples.len(),
+        &params,
+        frames,
         1, // mono
+        FixedAsync::Input,
     )?;
 
-    let waves_out = resampler.process(&[samples], None)?;
-    Ok(waves_out.into_iter().next().unwrap())
+    // For mono, interleaved layout is just the flat sample slice.
+    let input = InterleavedSlice::new(&samples, 1, frames)
+        .map_err(|e| anyhow!("resampler input adapter: {e:?}"))?;
+    let output = resampler.process(&input, 0, None)?;
+    Ok(output.take_data())
 }
 
 #[cfg(test)]
