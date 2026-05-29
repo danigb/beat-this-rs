@@ -88,6 +88,12 @@ uv run scripts/ckpt2onnx.py small1   # small -> commit  models/small1.onnx as be
 
 See the [original repo](https://github.com/CPJKU/beat_this#available-models) for available checkpoints.
 
+Every maintainer script under `scripts/*.py` is a self-contained
+[PEP 723](https://peps.python.org/pep-0723/) script with its dependencies declared
+inline, run as `uv run scripts/<name>.py …` — no virtualenv, `pip`, or
+`requirements.txt`. Installing [uv](https://docs.astral.sh/uv/) is the only
+prerequisite.
+
 </details>
 
 ## Command-line usage
