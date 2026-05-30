@@ -245,7 +245,7 @@ snapping). It does **not** implement the optional `--dbn` path (madmom's
 `DBNDownBeatTrackingProcessor`). Default-vs-default output therefore matches the
 reference; there is no equivalent of running Python with `--dbn`. This is intentional
 and not planned: the [Beat This!](https://arxiv.org/abs/2407.21658) model is designed
-to be accurate *without* DBN post-processing, which the paper shows can add metrical
+to be accurate _without_ DBN post-processing, which the paper shows can add metrical
 rigidity. (The C++ port omits the DBN as well.)
 
 ## Performance
