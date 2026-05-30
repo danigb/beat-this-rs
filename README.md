@@ -11,7 +11,8 @@ system (ISMIR 2024, Johannes Kepler University Linz). It detects musical **beats
 Ported with [Claude](https://claude.ai/).
 
 - **Paper**: ["Beat This! Accurate and Generalizable Beat Tracking"](https://arxiv.org/pdf/2407.21658)
-- **Original repo**: https://github.com/CPJKU/beat_this · **C++ port**: https://github.com/mosynthkey/beat_this_cpp
+- **Original repo**: https://github.com/CPJKU/beat_this
+- **C++ port**: https://github.com/mosynthkey/beat_this_cpp
 
 ## Features
 
@@ -43,6 +44,18 @@ cargo build --release
 ./scripts/download-models.sh
 ./target/release/beat-this input.mp3
 ```
+
+Optionally install the binary you just built onto your `PATH`, so you can call
+`beat-this` from anywhere instead of `./target/release/beat-this`:
+
+```bash
+cargo install --path .   # installs to ~/.cargo/bin/beat-this
+beat-this input.mp3 --model models/beat_this_small.onnx
+```
+
+Run from outside the repo by passing absolute model paths (or `cd` into the clone so the
+default `models/…` paths resolve). To install the published crate instead of your local
+checkout, see [Install](#install).
 
 ## Install
 
@@ -230,11 +243,23 @@ model, scored with the standard ±70 ms MIR F-measure:
   epsilon and tip a peak in or out — an irreducible, sub-MIR float difference, not a
   pipeline divergence.
 
-Known, bounded, sub-MIR divergences from the reference: the resampler (`rubato` sinc
-vs Python `soxr`, only affects inputs not already at 22050 Hz) and a ≤10 ms rounding
-of merged adjacent peaks. Regenerate the golden fixtures with
-`scripts/gen_golden.py` (maintainer-only) if the checkpoint or the mel/inference
-graph changes; see `tests/fixtures/README.md` for provenance.
+One known, bounded, sub-MIR divergence from the reference remains: the resampler
+(`rubato` sinc vs Python `soxr`), which only affects inputs **not** already at 22050 Hz
+— inputs at 22050 Hz resample exactly. Decode precision (f32 + symphonia vs float64 +
+torchaudio) differs negligibly. Merged-peak deduplication (kept fractional, not rounded)
+and pickup-measure beat numbering (`infer_beat_numbers`) now match the reference exactly.
+Regenerate the golden fixtures with `scripts/gen_golden.py` (maintainer-only) if the
+checkpoint or the mel/inference graph changes; see `tests/fixtures/README.md` for
+provenance.
+
+**Post-processing: "minimal" only.** beat-this-rs implements the Python reference's
+default `"minimal"` post-processor (max-pool peak picking + deduplication + downbeat
+snapping). It does **not** implement the optional `--dbn` path (madmom's
+`DBNDownBeatTrackingProcessor`). Default-vs-default output therefore matches the
+reference; there is no equivalent of running Python with `--dbn`. This is intentional
+and not planned: the [Beat This!](https://arxiv.org/abs/2407.21658) model is designed
+to be accurate _without_ DBN post-processing, which the paper shows can add metrical
+rigidity. (The C++ port omits the DBN as well.)
 
 ## Performance
 

@@ -43,10 +43,13 @@ impl PeakPicker {
         let beat_frames = find_peaks(beat_logits);
         let downbeat_frames = find_peaks(downbeat_logits);
 
-        let beats: Vec<f32> = beat_frames.iter().map(|&f| f as f32 / self.fps).collect();
+        let beats: Vec<f32> = beat_frames
+            .iter()
+            .map(|&f| (f / self.fps as f64) as f32)
+            .collect();
         let mut downbeats: Vec<f32> = downbeat_frames
             .iter()
-            .map(|&f| f as f32 / self.fps)
+            .map(|&f| (f / self.fps as f64) as f32)
             .collect();
 
         snap_downbeats_to_beats(&beats, &mut downbeats);
@@ -59,7 +62,7 @@ impl PeakPicker {
 ///
 /// Uses a max-pool window of 7 frames (±3) with stride 1.
 /// A frame is a peak if its value equals the local maximum and is positive.
-fn find_peaks(logits: &[f32]) -> Vec<usize> {
+fn find_peaks(logits: &[f32]) -> Vec<f64> {
     let len = logits.len();
     let mut peaks = Vec::new();
 
@@ -92,8 +95,9 @@ fn find_peaks(logits: &[f32]) -> Vec<usize> {
 /// Merge adjacent peak frame indices using a running mean.
 ///
 /// Groups of consecutive peaks where each pair is at most `width` frames apart
-/// are replaced by a single peak at their mean position (rounded).
-fn deduplicate_peaks(peaks: &[usize], width: usize) -> Vec<usize> {
+/// are replaced by a single peak at their mean position (kept fractional, not
+/// rounded), matching the Python reference's `deduplicate_peaks`.
+fn deduplicate_peaks(peaks: &[usize], width: usize) -> Vec<f64> {
     if peaks.is_empty() {
         return Vec::new();
     }
@@ -108,12 +112,12 @@ fn deduplicate_peaks(peaks: &[usize], width: usize) -> Vec<usize> {
             c += 1.0;
             p += (p2 - p) / c;
         } else {
-            result.push(p.round() as usize);
+            result.push(p);
             p = p2;
             c = 1.0;
         }
     }
-    result.push(p.round() as usize);
+    result.push(p);
 
     result
 }
@@ -157,7 +161,7 @@ mod tests {
     fn test_find_peaks_single_peak() {
         let logits = [0.0, 0.0, 0.5, 1.0, 0.5, 0.0, 0.0];
         let peaks = find_peaks(&logits);
-        assert_eq!(peaks, vec![3]);
+        assert_eq!(peaks, vec![3.0]);
     }
 
     #[test]
@@ -174,7 +178,7 @@ mod tests {
         logits[3] = 2.0;
         logits[15] = 1.5;
         let peaks = find_peaks(&logits);
-        assert_eq!(peaks, vec![3, 15]);
+        assert_eq!(peaks, vec![3.0, 15.0]);
     }
 
     #[test]
@@ -184,8 +188,8 @@ mod tests {
         let peaks = find_peaks(&logits);
         // Both pass max-pool check (tied), dedup merges them.
         assert_eq!(peaks.len(), 1);
-        // Mean of indices 1 and 2 is 1.5, rounds to 2.
-        assert_eq!(peaks[0], 2);
+        // Mean of indices 1 and 2 is 1.5.
+        assert_eq!(peaks[0], 1.5);
     }
 
     #[test]
@@ -197,24 +201,27 @@ mod tests {
     #[test]
     fn test_deduplicate_peaks_no_adjacent() {
         let peaks = deduplicate_peaks(&[5, 10, 20], 1);
-        assert_eq!(peaks, vec![5, 10, 20]);
+        assert_eq!(peaks, vec![5.0, 10.0, 20.0]);
     }
 
     #[test]
     fn test_deduplicate_peaks_merge() {
         // 10 and 11 merge (gap=1), mean=10.5. 12 is 1.5 from mean, starts new group.
         let peaks = deduplicate_peaks(&[10, 11, 12, 20], 1);
-        assert_eq!(peaks, vec![11, 12, 20]);
+        assert_eq!(peaks, vec![10.5, 12.0, 20.0]);
 
         // Three truly adjacent peaks: 10, 11 merge to 10.5, then 11 is 0.5 from 10.5 → merges.
+        // Running mean of {10, 11, 11} is 32/3 ≈ 10.6667 (kept fractional, not rounded).
         let peaks = deduplicate_peaks(&[10, 11, 11, 20], 1);
-        assert_eq!(peaks, vec![11, 20]);
+        assert_eq!(peaks.len(), 2);
+        assert!((peaks[0] - 32.0 / 3.0).abs() < 1e-9);
+        assert_eq!(peaks[1], 20.0);
     }
 
     #[test]
     fn test_deduplicate_peaks_single() {
         let peaks = deduplicate_peaks(&[42], 1);
-        assert_eq!(peaks, vec![42]);
+        assert_eq!(peaks, vec![42.0]);
     }
 
     #[test]
