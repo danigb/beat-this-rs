@@ -11,7 +11,8 @@ system (ISMIR 2024, Johannes Kepler University Linz). It detects musical **beats
 Ported with [Claude](https://claude.ai/).
 
 - **Paper**: ["Beat This! Accurate and Generalizable Beat Tracking"](https://arxiv.org/pdf/2407.21658)
-- **Original repo**: https://github.com/CPJKU/beat_this · **C++ port**: https://github.com/mosynthkey/beat_this_cpp
+- **Original repo**: https://github.com/CPJKU/beat_this
+- **C++ port**: https://github.com/mosynthkey/beat_this_cpp
 
 ## Features
 
@@ -43,6 +44,18 @@ cargo build --release
 ./scripts/download-models.sh
 ./target/release/beat-this input.mp3
 ```
+
+Optionally install the binary you just built onto your `PATH`, so you can call
+`beat-this` from anywhere instead of `./target/release/beat-this`:
+
+```bash
+cargo install --path .   # installs to ~/.cargo/bin/beat-this
+beat-this input.mp3 --model models/beat_this_small.onnx
+```
+
+Run from outside the repo by passing absolute model paths (or `cd` into the clone so the
+default `models/…` paths resolve). To install the published crate instead of your local
+checkout, see [Install](#install).
 
 ## Install
 
