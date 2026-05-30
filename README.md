@@ -230,11 +230,23 @@ model, scored with the standard ±70 ms MIR F-measure:
   epsilon and tip a peak in or out — an irreducible, sub-MIR float difference, not a
   pipeline divergence.
 
-Known, bounded, sub-MIR divergences from the reference: the resampler (`rubato` sinc
-vs Python `soxr`, only affects inputs not already at 22050 Hz) and a ≤10 ms rounding
-of merged adjacent peaks. Regenerate the golden fixtures with
-`scripts/gen_golden.py` (maintainer-only) if the checkpoint or the mel/inference
-graph changes; see `tests/fixtures/README.md` for provenance.
+One known, bounded, sub-MIR divergence from the reference remains: the resampler
+(`rubato` sinc vs Python `soxr`), which only affects inputs **not** already at 22050 Hz
+— inputs at 22050 Hz resample exactly. Decode precision (f32 + symphonia vs float64 +
+torchaudio) differs negligibly. Merged-peak deduplication (kept fractional, not rounded)
+and pickup-measure beat numbering (`infer_beat_numbers`) now match the reference exactly.
+Regenerate the golden fixtures with `scripts/gen_golden.py` (maintainer-only) if the
+checkpoint or the mel/inference graph changes; see `tests/fixtures/README.md` for
+provenance.
+
+**Post-processing: "minimal" only.** beat-this-rs implements the Python reference's
+default `"minimal"` post-processor (max-pool peak picking + deduplication + downbeat
+snapping). It does **not** implement the optional `--dbn` path (madmom's
+`DBNDownBeatTrackingProcessor`). Default-vs-default output therefore matches the
+reference; there is no equivalent of running Python with `--dbn`. This is intentional
+and not planned: the [Beat This!](https://arxiv.org/abs/2407.21658) model is designed
+to be accurate *without* DBN post-processing, which the paper shows can add metrical
+rigidity. (The C++ port omits the DBN as well.)
 
 ## Performance
 
