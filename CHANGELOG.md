@@ -4,9 +4,9 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased]
+## [1.0.0] - 2026-05-30
 
-Parity-with-the-reference release (targeting v1.0.0). Parity with the Python
+Parity-with-the-reference release. Parity with the Python
 [`beat_this`](https://github.com/CPJKU/beat_this) reference is now **verified by a
 committed golden test** (`tests/python_parity.rs`), not just argued by construction:
 F-measure == 1.0 (standard FP32 model) and ≥ 0.99 (small model) at the ±70 ms MIR
@@ -25,7 +25,7 @@ window for both beats and downbeats.
   rounding to an integer frame, matching the Python reference (removes a ≤10 ms
   divergence on merged adjacent peaks)
 - `beat_counts` now ports the reference's `infer_beat_numbers`: pickup-measure
-  (anacrusis) beats are numbered so they lead *into* the first downbeat, matching the
+  (anacrusis) beats are numbered so they lead _into_ the first downbeat, matching the
   Python `.beats`/JSON count column (beat/downbeat **times** are unchanged)
 - The `ort` (ONNX Runtime) backend is now behind an off-by-default `ort` Cargo
   feature. The default build is pure-Rust `rten` only — no `libonnxruntime` needed.
