@@ -13,6 +13,7 @@ jobs:
   # Default build: pure-Rust rten backend, no system libraries.
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -24,10 +25,15 @@ jobs:
       - run: cargo test
 
   # Opt-in ort backend: exercises the feature so it can't bit-rot.
-  # libonnxruntime must match the API version ort expects (an older runtime
-  # makes ort deadlock during init).
+  # libonnxruntime MUST match the API version the `ort` crate expects: a
+  # mismatched runtime makes ort deadlock during init, and because that is a
+  # hang (not a panic) the catch_unwind guard in tests/cross_runtime.rs cannot
+  # catch it — the cross-runtime tests spin forever. ort 2.0.0-rc.12 targets
+  # ONNX Runtime 1.24.x (see Cargo.toml pin). The timeout-minutes below caps any
+  # future mismatch at a fast failure instead of the 6h job limit.
   ort:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -36,7 +42,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install ONNX Runtime
         run: |
-          ORT_VERSION=1.22.0
+          ORT_VERSION=1.24.2
           curl -fL --retry 3 -o ort.tgz \
             "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-linux-x64-${ORT_VERSION}.tgz"
           tar xzf ort.tgz
