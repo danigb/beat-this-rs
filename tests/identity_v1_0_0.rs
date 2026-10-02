@@ -460,7 +460,7 @@ fn push_size_invariance_all_rates() {
     }
 }
 
-/// Degradations: the exact-ratio comparison must notice a one-ULP input change in the first chunk
+/// Degradations: the exact-ratio comparison must notice a tiny input change in the first chunk
 /// and a dropped sample at a chunk boundary.
 #[test]
 fn resampler_comparison_degradations() {
@@ -468,13 +468,12 @@ fn resampler_comparison_degradations() {
     let x = ten_seconds(sr);
     let reference = reference_resample(&x, sr);
 
+    // A tiny perturbation (1e-6, a few ULP) of a mid-chunk sample. A single ULP is not enough on
+    // every CPU: on x86 the filter's f32 accumulation can absorb a 1-ULP input change entirely.
     let mut bumped = x.clone();
-    bumped[8191] = f32::from_bits(bumped[8191].to_bits() + 1);
+    bumped[4000] += 1e-6;
     let d = bit_diff(&stream_resample(&bumped, sr, 8192), &reference);
-    assert!(
-        d.differing > 0,
-        "a 1-ULP input change went unnoticed: {d:?}"
-    );
+    assert!(d.differing > 0, "a 1e-6 input change went unnoticed: {d:?}");
 
     let mut dropped = x.clone();
     dropped.remove(8192);
