@@ -118,6 +118,121 @@ fn assert_same(what: &str, new: &BeatAnalysis, old: &v1::V1Analysis) {
     );
 }
 
+/// Drift bounds for sources whose chunked resampling is not bit-identical to 1.0.0 (decision D1,
+/// E1 answered 2026-10-02). The largest drifts recorded in `worklog/03-chunked-resampler.md` over
+/// the in-repo inputs, the 5/20-minute synth at 16/32/48/96 kHz and the 23-file corpus are PCM
+/// 1.57e-3 (32 kHz, 20 min), mel 3.47e-4 and logits 2.10e-4; the bounds add margin.
+const PCM_DRIFT_BOUND: f32 = 2e-3;
+const MEL_DRIFT_BOUND: f32 = 5e-4;
+const LOGIT_DRIFT_BOUND: f32 = 5e-4;
+
+/// True where the current pipeline must still be bit-identical to 1.0.0 at this input rate.
+fn rate_is_exact(rate: u32) -> bool {
+    rate == 22050 || __probe::chunking_is_exact(rate)
+}
+
+/// D1: same shapes and lengths, beats and downbeats bit-identical, mel and logits within the
+/// drift bounds. Prints the bit-level differences.
+fn assert_drift(what: &str, new: &BeatAnalysis, old: &v1::V1Analysis) {
+    assert_eq!(new.mel.shape, old.mel.shape, "{what}: mel shape");
+    let mel = bit_diff(&new.mel.data, &old.mel.data);
+    let beat = bit_diff(&new.beat_logits, &old.beat_logits);
+    let down = bit_diff(&new.downbeat_logits, &old.downbeat_logits);
+    eprintln!("{what}: drift: mel {mel:?}; beat logits {beat:?}; downbeat logits {down:?}");
+    assert_eq!(beat.len_a, beat.len_b, "{what}: beat logits length");
+    assert_eq!(down.len_a, down.len_b, "{what}: downbeat logits length");
+    assert!(
+        mel.max_abs <= MEL_DRIFT_BOUND,
+        "{what}: mel drift too large: {mel:?}"
+    );
+    assert!(
+        beat.max_abs <= LOGIT_DRIFT_BOUND && down.max_abs <= LOGIT_DRIFT_BOUND,
+        "{what}: logit drift too large: {beat:?} {down:?}"
+    );
+    assert_bits_eq(&format!("{what}: beats"), &new.beats, &old.beats);
+    assert_bits_eq(
+        &format!("{what}: downbeats"),
+        &new.downbeats,
+        &old.downbeats,
+    );
+}
+
+/// Bit identity at exact rates, the D1 drift check elsewhere.
+fn assert_same_or_drift(what: &str, rate: u32, new: &BeatAnalysis, old: &v1::V1Analysis) {
+    if rate_is_exact(rate) {
+        assert_same(what, new, old);
+    } else {
+        assert_drift(what, new, old);
+    }
+}
+
+/// D1 on resampled PCM: same length, within the PCM drift bound. Prints the difference.
+fn assert_pcm_drift(what: &str, got: &[f32], reference: &[f32]) {
+    let d = bit_diff(got, reference);
+    if d.differing > 0 {
+        eprintln!("{what}: pcm drift {d:?}");
+    }
+    assert_eq!(d.len_a, d.len_b, "{what}: length");
+    assert!(
+        d.max_abs <= PCM_DRIFT_BOUND,
+        "{what}: pcm drift too large: {d:?}"
+    );
+}
+
+/// Degradations for the D1 drift checks: each must reject a change larger than its bound, a
+/// moved beat, and a length change, and accept the real 48 kHz drift.
+#[test]
+fn drift_checks_can_fail() {
+    require_models!();
+    let x = forty_seconds(48000);
+    let current = new_bt().analyze_audio(&x, 48000).unwrap();
+    let old = v1_bt().analyze_audio(&x, 48000).unwrap();
+    assert_drift("48 kHz, unperturbed", &current, &old);
+    let rejects = |what: &str, bad: &v1::V1Analysis| {
+        let outcome = catch_unwind(AssertUnwindSafe(|| assert_drift(what, &current, bad)));
+        assert!(outcome.is_err(), "assert_drift accepted: {what}");
+    };
+    let mut bad = old.clone();
+    bad.mel.data[1000] += 2.0 * MEL_DRIFT_BOUND;
+    rejects("mel change above the bound", &bad);
+    let mut bad = old.clone();
+    bad.beat_logits[100] += 2.0 * LOGIT_DRIFT_BOUND;
+    rejects("beat logit change above the bound", &bad);
+    let mut bad = old.clone();
+    bad.downbeat_logits[100] += 2.0 * LOGIT_DRIFT_BOUND;
+    rejects("downbeat logit change above the bound", &bad);
+    assert!(!old.beats.is_empty() && !old.downbeats.is_empty());
+    let mut bad = old.clone();
+    bad.beats[0] = f32::from_bits(bad.beats[0].to_bits() + 1);
+    rejects("a beat moved by 1 ULP", &bad);
+    let mut bad = old.clone();
+    bad.downbeats[0] = f32::from_bits(bad.downbeats[0].to_bits() + 1);
+    rejects("a downbeat moved by 1 ULP", &bad);
+    let mut bad = old.clone();
+    bad.beat_logits.pop();
+    rejects("a length change", &bad);
+
+    let reference = reference_resample(&x, 48000);
+    let got = __probe::resample(x.clone(), 48000).unwrap();
+    assert_pcm_drift("48 kHz pcm, unperturbed", &got, &reference);
+    let mut bad = got.clone();
+    bad[5000] += 2.0 * PCM_DRIFT_BOUND;
+    let outcome = catch_unwind(AssertUnwindSafe(|| {
+        assert_pcm_drift("pcm above the bound", &bad, &reference)
+    }));
+    assert!(
+        outcome.is_err(),
+        "assert_pcm_drift accepted a change above the bound"
+    );
+    let outcome = catch_unwind(AssertUnwindSafe(|| {
+        assert_pcm_drift("pcm length", &got[1..], &reference)
+    }));
+    assert!(
+        outcome.is_err(),
+        "assert_pcm_drift accepted a length change"
+    );
+}
+
 /// 40 s is 2000 mel frames, longer than one 1500-frame beat chunk.
 fn forty_seconds(rate: u32) -> Vec<f32> {
     Synth::take(rate, 40 * rate as usize)
@@ -248,7 +363,7 @@ fn check_analyze_audio(rate: u32) {
     let x = forty_seconds(rate);
     let current = new_bt().analyze_audio(&x, rate).unwrap();
     let old = v1_bt().analyze_audio(&x, rate).unwrap();
-    assert_same(&format!("analyze_audio @ {rate}"), &current, &old);
+    assert_same_or_drift(&format!("analyze_audio @ {rate}"), rate, &current, &old);
 }
 
 #[test]
@@ -261,6 +376,7 @@ fn analyze_audio_matches_v1_0_0_44100() {
     check_analyze_audio(44100);
 }
 
+/// 48 kHz drifts from 1.0.0 under D1: checked with `assert_drift`.
 #[test]
 fn analyze_audio_matches_v1_0_0_48000() {
     check_analyze_audio(48000);
@@ -271,7 +387,7 @@ fn check_analyze_owned(rate: u32) {
     let x = forty_seconds(rate);
     let current = new_bt().analyze_owned(x.clone(), rate).unwrap();
     let old = v1_bt().analyze_audio(&x, rate).unwrap();
-    assert_same(&format!("analyze_owned @ {rate}"), &current, &old);
+    assert_same_or_drift(&format!("analyze_owned @ {rate}"), rate, &current, &old);
 }
 
 #[test]
@@ -284,6 +400,7 @@ fn analyze_owned_matches_v1_0_0_44100() {
     check_analyze_owned(44100);
 }
 
+/// 48 kHz drifts from 1.0.0 under D1: checked with `assert_drift`.
 #[test]
 fn analyze_owned_matches_v1_0_0_48000() {
     check_analyze_owned(48000);
@@ -342,7 +459,7 @@ fn tiny_inputs_match_v1_0_0() {
                 "{what}: error behaviour differs"
             );
             if let (Ok(c), Ok(o)) = (&current, &old) {
-                assert_same(&what, c, o);
+                assert_same_or_drift(&what, rate, c, o);
                 ok += 1;
             } else {
                 err += 1;
@@ -364,11 +481,21 @@ fn long_inputs_match_v1_0_0() {
             let x = Synth::take(rate, minutes * 60 * rate as usize);
             let current = new.analyze_audio(&x, rate).unwrap();
             let old = v1.analyze_audio(&x, rate).unwrap();
-            assert_same(&format!("{minutes} min @ {rate}"), &current, &old);
+            assert_same_or_drift(&format!("{minutes} min @ {rate}"), rate, &current, &old);
             drop(current);
             let owned = new.analyze_owned(x, rate).unwrap();
-            assert_same(&format!("{minutes} min @ {rate} (owned)"), &owned, &old);
-            eprintln!("{minutes} min @ {rate}: identical");
+            assert_same_or_drift(
+                &format!("{minutes} min @ {rate} (owned)"),
+                rate,
+                &owned,
+                &old,
+            );
+            let how = if rate_is_exact(rate) {
+                "identical"
+            } else {
+                "within drift bounds, beats identical"
+            };
+            eprintln!("{minutes} min @ {rate}: {how}");
         }
     }
 }
@@ -589,8 +716,9 @@ struct DriftReport {
     downbeats: usize,
 }
 
-/// Analyse `x` (48 kHz-class input) through 1.0.0 (one-shot resample) and through the chunked
-/// resampler, and assert that beats and downbeats are bit-identical.
+/// Analyse `x` (48 kHz-class input) through 1.0.0 (one-shot resample) and through the current
+/// default path (`analyze_audio`, which resamples in chunks under D1), and assert that beats and
+/// downbeats are bit-identical.
 fn compare_downstream(
     what: &str,
     x: &[f32],
@@ -599,10 +727,11 @@ fn compare_downstream(
     v1: &mut OldBt,
 ) -> DriftReport {
     let reference = reference_resample(x, sr);
-    let streamed = stream_resample(x, sr, 8192);
-    let resampled = bit_diff(&streamed, &reference);
-    let old = v1.analyze_audio(&reference, 22050).unwrap();
-    let current = new.analyze_audio(&streamed, 22050).unwrap();
+    let routed = __probe::resample(x.to_vec(), sr).unwrap();
+    let resampled = bit_diff(&routed, &reference);
+    drop((reference, routed));
+    let old = v1.analyze_audio(x, sr).unwrap();
+    let current = new.analyze_audio(x, sr).unwrap();
     let min_abs_logit = old
         .beat_logits
         .iter()
@@ -730,8 +859,8 @@ fn corpus_files(root: &Path) -> Vec<std::path::PathBuf> {
     files
 }
 
-/// The routed `resample` (chunked where exact, one-shot otherwise) against the 1.0.0 one-shot call,
-/// including tiny inputs and the error behaviour.
+/// The routed `resample` (always chunked, D1) against the 1.0.0 one-shot call, including tiny
+/// inputs and the error behaviour: bit-identical at exact rates, within the drift bound elsewhere.
 #[test]
 fn routed_resample_matches_v1_0_0() {
     for sr in [11025u32, 44100, 88200, 48000, 32000] {
@@ -744,10 +873,13 @@ fn routed_resample_matches_v1_0_0() {
             let old = audio::resample(x.to_vec(), sr, 22050);
             let new = __probe::resample(x.to_vec(), sr);
             assert_eq!(old.is_err(), new.is_err(), "error behaviour @ {sr}, n={n}");
-            // Exact rates go through the chunked path and must match it; the others take the
-            // one-shot path, which is the reference itself.
             if let (Ok(o), Ok(c)) = (old, new) {
-                assert_bits_eq(&format!("routed resample @ {sr}, n={n}"), &c, &o);
+                let what = format!("routed resample @ {sr}, n={n}");
+                if __probe::chunking_is_exact(sr) {
+                    assert_bits_eq(&what, &c, &o);
+                } else {
+                    assert_pcm_drift(&what, &c, &o);
+                }
             }
         }
     }

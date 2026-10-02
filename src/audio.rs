@@ -304,49 +304,22 @@ impl StreamResampler {
 /// Resample mono audio from `source_sr` to `target_sr` using sinc interpolation.
 /// Returns samples unchanged if rates already match, and an error if either rate is 0.
 ///
-/// Where chunked processing is provably bit-identical to the one-shot call
-/// ([`chunking_is_exact`]: sources of 22050 * 2^k Hz, such as 44.1 kHz) the signal is resampled in
-/// fixed chunks, so rubato's buffers stay small and the input is freed before the flush. Other
-/// rates use the one-shot call, which is O(signal) in memory; see [`StreamResampler`] for the
-/// chunked path at any rate.
+/// The signal is resampled in fixed chunks by [`StreamResampler`], so rubato's buffers stay small
+/// and the input is freed before the flush. The output length always equals 1.0.0's one-shot call.
+/// For sources of 22050 * 2^k Hz (such as 44.1 kHz, [`chunking_is_exact`]) the samples are
+/// bit-identical to 1.0.0's; at other rates (48 kHz etc.) they drift slightly from 1.0.0's
+/// (accepted for 1.1 as decision D1 of the bounded-memory work).
 pub fn resample(samples: Vec<f32>, source_sr: u32, target_sr: u32) -> Result<Vec<f32>> {
     if source_sr == target_sr {
         return Ok(samples);
     }
     check_rates(source_sr, target_sr)?;
-    if chunking_is_exact(source_sr, target_sr) {
-        let mut resampler = StreamResampler::new(source_sr, target_sr)?;
-        let mut out = Vec::with_capacity(one_shot_len(samples.len(), resampler.ratio));
-        resampler.push(&samples, &mut out)?;
-        drop(samples);
-        resampler.finish(&mut out)?;
-        return Ok(out);
-    }
-    resample_one_shot(samples, source_sr, target_sr)
-}
-
-/// The whole input as one rubato chunk.
-fn resample_one_shot(samples: Vec<f32>, source_sr: u32, target_sr: u32) -> Result<Vec<f32>> {
-    let params = sinc_params();
-
-    // rubato 3.0: `SincFixedIn` became `Async` with `FixedAsync::Input`. We
-    // process the whole buffer in a single call (chunk_size = input length),
-    // matching the previous one-shot behavior.
-    let frames = samples.len();
-    let mut resampler = Async::<f32>::new_sinc(
-        target_sr as f64 / source_sr as f64,
-        2.0,
-        &params,
-        frames,
-        1, // mono
-        FixedAsync::Input,
-    )?;
-
-    // For mono, interleaved layout is just the flat sample slice.
-    let input = InterleavedSlice::new(&samples, 1, frames)
-        .map_err(|e| anyhow!("resampler input adapter: {e:?}"))?;
-    let output = resampler.process(&input, 0, None)?;
-    Ok(output.take_data())
+    let mut resampler = StreamResampler::new(source_sr, target_sr)?;
+    let mut out = Vec::with_capacity(one_shot_len(samples.len(), resampler.ratio));
+    resampler.push(&samples, &mut out)?;
+    drop(samples);
+    resampler.finish(&mut out)?;
+    Ok(out)
 }
 
 #[cfg(test)]
