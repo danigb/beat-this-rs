@@ -3,8 +3,6 @@
 //! These tests guard the documented usage through the public API only; bit identity against 1.0.0
 //! and against the whole-buffer path is checked in `tests/identity_v1_0_0.rs`.
 
-mod common;
-
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -46,12 +44,28 @@ fn stream_chunks_match_analyze_file() {
     let timed = stream.finish_timed().unwrap();
     let analysis = timed.analysis;
 
+    // 44.1 kHz is an exact resampling ratio, so streaming the native samples gives the same bits
+    // as `analyze_file` (which resamples the whole file in `load_audio`).
     assert_eq!(analysis.mel.shape, expected.mel.shape);
     assert!(!analysis.beats.is_empty() && !analysis.downbeats.is_empty());
-    let beats = common::f_measure(&expected.beats, &analysis.beats, 0.07);
-    let downbeats = common::f_measure(&expected.downbeats, &analysis.downbeats, 0.07);
-    assert_eq!(beats.f_measure, 1.0, "beats F-measure");
-    assert_eq!(downbeats.f_measure, 1.0, "downbeats F-measure");
+    let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+    assert_eq!(bits(&analysis.mel.data), bits(&expected.mel.data), "mel");
+    assert_eq!(
+        bits(&analysis.beat_logits),
+        bits(&expected.beat_logits),
+        "beat logits"
+    );
+    assert_eq!(
+        bits(&analysis.downbeat_logits),
+        bits(&expected.downbeat_logits),
+        "downbeat logits"
+    );
+    assert_eq!(bits(&analysis.beats), bits(&expected.beats), "beats");
+    assert_eq!(
+        bits(&analysis.downbeats),
+        bits(&expected.downbeats),
+        "downbeats"
+    );
     assert!(timed.timing.mel > std::time::Duration::ZERO);
 }
 
