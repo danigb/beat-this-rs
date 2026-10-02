@@ -161,8 +161,8 @@ beat-this "music/**/*.mp3" --json
 
 ## Library usage
 
-The default feature set pulls on a lot of dependencies required for the CLI. If you intend to use 
-the crate as a library, you should disable default features and enable only the ones needed:
+The default feature set pulls in a lot of dependencies that only the CLI needs. If you use the
+crate as a library, disable default features and enable only the ones you need:
 
 - `decode` for audio file decoding using `symphonia`
 - `serde` for serialization of the `Tensor` struct
@@ -195,6 +195,40 @@ for (i, &t) in analysis.beats.iter().enumerate() {
 `analysis.beats` / `analysis.downbeats` are beat times in seconds; `analysis.mel.shape`
 is `[1, T, 128]`. To use the ONNX Runtime backend instead, swap `&RtenRuntime` for
 `&OrtRuntime::default()` (requires the ONNX Runtime dylib — see [Install](#install)).
+
+If you already hold decoded mono audio in memory, use `analyze_audio(&samples, rate)`, or
+`analyze_owned(samples, rate)`, which consumes the `Vec<f32>` and frees it before the beat model
+runs. For long inputs, don't build the whole signal at all: push mono chunks of any size into a
+stream as you decode them.
+
+```rust
+let mut stream = bt.stream(48_000)?;      // the chunks' sample rate
+for chunk in decoded_chunks {             // mono f32, any chunk size
+    stream.push(&chunk)?;
+}
+let analysis = stream.finish()?;          // or finish_timed() for per-stage timing
+```
+
+The stream holds about 3 MB of audio state plus the mel spectrogram. Measured on macOS (Apple
+M4 Pro) with the full model, 60 minutes of 48 kHz audio peak at 620 MiB through `stream` (1.0.0's
+`analyze_audio`: about 5.5 GiB, a noisy measurement), and the peak grows linearly by about 94 MiB
+per hour of audio. The stream mutably borrows `bt` until `finish`; with the rten model it is
+`Send`. All three return the same analysis, bit for bit, whatever the chunk sizes.
+
+Compared with 1.0.0, output is bit-identical for 22 050 Hz input and 22 050·2^k Hz sources
+(11.025 / 44.1 / 88.2 kHz). At other rates (48 kHz etc.) the resampler now runs in chunks, and
+the output differs from 1.0.0's:
+
+- On short inputs by a small drift: beats and downbeats were unchanged on every input tested (a
+  23-file corpus at 48 kHz, the test MP3 upsampled to 48 kHz, and a synthetic 48 kHz signal at 20,
+  40 and 50 minutes).
+- On long inputs by more, because 1.0.0's one-shot resampler loses position precision as the input
+  grows (sharply past 46.6 minutes at 48 kHz) and 1.1.0's does not: on 60 minutes of the synthetic
+  signal, 2 of 7 200 beats and 2 of 5 886 downbeats moved by one frame (20 ms).
+
+`load_audio` to a target other than 22 050 Hz is bit-identical only where the source/target ratio
+is exact (e.g. 44.1 kHz to 88.2 kHz). These identity statements were checked on arm64; see the
+[CHANGELOG](CHANGELOG.md) (1.1.0) for the numbers and for what ran on x86_64.
 
 ## Output formats
 

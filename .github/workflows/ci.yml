@@ -23,6 +23,9 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy -- -D warnings
       - run: cargo test
+      # Library-only build (no `cli`, `decode`, `serde`): keeps the feature gates honest.
+      - run: cargo clippy --all-targets --no-default-features -- -D warnings
+      - run: cargo test --no-default-features
 
   # Opt-in ort backend: exercises the feature so it can't bit-rot.
   # libonnxruntime MUST match the API version the `ort` crate expects: a

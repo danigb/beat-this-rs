@@ -1,6 +1,6 @@
 [package]
 name = "beat-this"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2021"
 rust-version = "1.89"
 description = "Rust port of Beat This! — AI-powered beat and downbeat tracking"
@@ -65,6 +65,7 @@ glob = { version = "0.3", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tempfile = "3"
+libc = "0.2"
 
 [profile.release]
 lto = true

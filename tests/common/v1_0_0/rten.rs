@@ -2,8 +2,9 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::{anyhow, Result};
-use rten::{Model as RtenGraph, NodeId, ValueView};
-use rten_tensor::Layout;
+use rten::Value as RtenValue;
+use rten::{Model as RtenGraph, NodeId};
+use rten_tensor::{AsView, Layout};
 
 use super::{Model, Runtime, Tensor};
 
@@ -64,27 +65,26 @@ pub struct RtenModel {
 
 impl Model for RtenModel {
     fn run(&mut self, inputs: &[(&str, &Tensor)]) -> Result<HashMap<String, Tensor>> {
-        // Convert named inputs to (NodeId, ValueView) pairs. rten takes borrowed views, so the
-        // caller's data is not copied.
-        let rten_inputs: Vec<(NodeId, ValueView<'_>)> = inputs
+        // Convert named inputs to (NodeId, Value) pairs
+        let rten_inputs: Vec<(NodeId, RtenValue)> = inputs
             .iter()
             .map(|(name, tensor)| {
                 let node_id = self
                     .input_map
                     .get(*name)
                     .ok_or_else(|| anyhow!("rten: unknown input name '{}'", name))?;
-                let view = ValueView::from_shape(tensor.shape.as_slice(), tensor.data.as_slice())
+                let value = RtenValue::from_shape(tensor.shape.as_slice(), tensor.data.clone())
                     .map_err(|e| {
-                    anyhow!("rten: failed to create input tensor '{}': {}", name, e)
-                })?;
-                Ok((*node_id, view))
+                        anyhow!("rten: failed to create input tensor '{}': {}", name, e)
+                    })?;
+                Ok((*node_id, value))
             })
             .collect::<Result<Vec<_>>>()?;
 
-        // model.run takes Vec<(NodeId, ValueOrView)>
+        // model.run takes Vec<(NodeId, ValueOrView)> — convert via (&val).into()
         let inputs_with_views: Vec<_> = rten_inputs
-            .into_iter()
-            .map(|(id, view)| (id, view.into()))
+            .iter()
+            .map(|(id, val)| (*id, val.into()))
             .collect();
 
         let outputs = self.model.run(inputs_with_views, &self.output_ids, None)?;
@@ -103,7 +103,7 @@ impl Model for RtenModel {
                 .into_tensor::<f32>()
                 .ok_or_else(|| anyhow!("rten: output '{}' is not f32", name))?;
             let shape: Vec<usize> = rten_tensor.shape().to_vec();
-            let data: Vec<f32> = rten_tensor.into_data();
+            let data: Vec<f32> = rten_tensor.to_vec();
 
             result.insert(name, Tensor { shape, data });
         }
