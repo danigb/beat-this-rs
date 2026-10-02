@@ -1,3 +1,51 @@
+//! Beat and downbeat tracking with the [Beat This!](https://github.com/CPJKU/beat_this) model.
+//!
+//! [`BeatThis`] runs the whole pipeline: resampling to 22 050 Hz mono, a log-mel spectrogram, the
+//! beat model on 30-second chunks, and peak picking into beat and downbeat times in seconds.
+//!
+//! ```no_run
+//! # fn main() -> anyhow::Result<()> {
+//! use beat_this::{BeatThis, RtenRuntime};
+//! use std::path::Path;
+//!
+//! let mut bt = BeatThis::new(
+//!     &RtenRuntime,
+//!     Path::new("models/mel_spectrogram.onnx"),
+//!     Path::new("models/beat_this.onnx"),
+//! )?;
+//! let analysis = bt.analyze_file(Path::new("input.wav"))?;
+//! println!("{} beats", analysis.beats.len());
+//! # Ok(()) }
+//! ```
+//!
+//! # Long inputs
+//!
+//! [`BeatThis::analyze_audio`] needs the whole signal in memory. To analyse long audio while it
+//! is decoded, push mono chunks into a [`BeatStream`] instead: peak memory is then O(chunk) plus
+//! the mel spectrogram, which grows by about 92 MB per hour of audio. The result is bit-identical
+//! to `analyze_audio` on the same samples, whatever the chunk sizes.
+//!
+//! ```no_run
+//! # fn main() -> anyhow::Result<()> {
+//! use beat_this::{BeatThis, RtenRuntime};
+//! use std::path::Path;
+//!
+//! let mut bt = BeatThis::new(
+//!     &RtenRuntime,
+//!     Path::new("models/mel_spectrogram.onnx"),
+//!     Path::new("models/beat_this.onnx"),
+//! )?;
+//! # let decoded_chunks: Vec<Vec<f32>> = Vec::new();
+//! let mut stream = bt.stream(48_000)?;
+//! for chunk in decoded_chunks {
+//!     // Mono f32 at 48 kHz, any chunk size.
+//!     stream.push(&chunk)?;
+//! }
+//! let analysis = stream.finish()?;
+//! println!("{} beats, {} downbeats", analysis.beats.len(), analysis.downbeats.len());
+//! # Ok(()) }
+//! ```
+
 #[doc(hidden)]
 #[path = "probe.rs"]
 pub mod __probe;
@@ -7,6 +55,7 @@ mod mel;
 mod output;
 mod postprocessing;
 mod runtime;
+mod stream;
 
 use std::path::Path;
 use std::time::Duration;
@@ -18,6 +67,7 @@ pub use output::{beat_counts, calculate_bpm};
 #[cfg(feature = "ort")]
 pub use runtime::ort::OrtRuntime;
 pub use runtime::{rten::RtenRuntime, Model, Runtime, Tensor};
+pub use stream::BeatStream;
 
 use inference::BeatPredictor;
 use mel::MelExtractor;
@@ -52,7 +102,8 @@ pub struct BeatThis<M: Model> {
     peak_picker: PeakPicker,
 }
 
-/// Per-stage timing from [`BeatThis::analyze_audio_timed`].
+/// Per-stage timing from [`BeatThis::analyze_audio_timed`] and [`BeatStream::finish_timed`].
+/// `mel` does not include resampling.
 #[derive(Debug, Clone)]
 pub struct AnalysisTiming {
     pub mel: Duration,
@@ -112,8 +163,10 @@ impl<M: Model> BeatThis<M> {
     /// The samples are resampled to 22050 Hz if `sample_rate` differs.
     /// Input should be mono f32 PCM.
     ///
-    /// The slice is copied once. For large inputs prefer [`analyze_owned`](Self::analyze_owned),
-    /// which consumes the buffer instead.
+    /// The slice is not copied: it runs through [`stream`](Self::stream) as a single push, so the
+    /// same result comes from feeding the signal in chunks. For long inputs that are decoded
+    /// incrementally, use [`stream`](Self::stream) directly so the whole signal never has to be in
+    /// memory.
     pub fn analyze_audio(&mut self, samples: &[f32], sample_rate: u32) -> Result<BeatAnalysis> {
         Ok(self.analyze_audio_timed(samples, sample_rate)?.analysis)
     }
@@ -124,14 +177,16 @@ impl<M: Model> BeatThis<M> {
         samples: &[f32],
         sample_rate: u32,
     ) -> Result<TimedAnalysis> {
-        self.analyze_owned_timed(samples.to_vec(), sample_rate)
+        let mut stream = self.stream(sample_rate)?;
+        stream.push(samples)?;
+        stream.finish_timed()
     }
 
     /// Run the full pipeline on owned mono f32 samples.
     ///
-    /// Same output as [`analyze_audio`](Self::analyze_audio), bit for bit. Prefer this for large
-    /// inputs: the buffer is consumed, so no copy of it is made, and it is freed as soon as
-    /// resampling is done.
+    /// Same output as [`analyze_audio`](Self::analyze_audio), bit for bit. The buffer is consumed
+    /// and freed as soon as it has been fed through [`stream`](Self::stream), before the beat
+    /// model runs.
     pub fn analyze_owned(&mut self, samples: Vec<f32>, sample_rate: u32) -> Result<BeatAnalysis> {
         Ok(self.analyze_owned_timed(samples, sample_rate)?.analysis)
     }
@@ -142,16 +197,26 @@ impl<M: Model> BeatThis<M> {
         samples: Vec<f32>,
         sample_rate: u32,
     ) -> Result<TimedAnalysis> {
-        let samples = if sample_rate != TARGET_SAMPLE_RATE {
-            audio::resample(samples, sample_rate, TARGET_SAMPLE_RATE)?
-        } else {
-            samples
-        };
+        let mut stream = self.stream(sample_rate)?;
+        stream.push(&samples)?;
+        drop(samples);
+        stream.finish_timed()
+    }
 
-        let t = std::time::Instant::now();
-        let mel = self.mel.extract_owned(samples)?;
-        let mel_time = t.elapsed();
+    /// Start a streaming analysis of mono f32 audio at `sample_rate`: push the signal in chunks of
+    /// any size with [`BeatStream::push`], then call [`BeatStream::finish`].
+    ///
+    /// This is the way to analyse long inputs: peak memory is O(chunk) plus the mel spectrogram
+    /// (about 92 MB per hour of audio), instead of the whole signal. The result is bit-identical
+    /// to [`analyze_audio`](Self::analyze_audio) on the concatenated chunks. Errors if
+    /// `sample_rate` is 0.
+    pub fn stream(&mut self, sample_rate: u32) -> Result<BeatStream<'_, M>> {
+        BeatStream::new(self, sample_rate)
+    }
 
+    /// Beat model and peak picking on a whole mel spectrogram, timed as `analyze_audio_timed`
+    /// reports them. `mel_time` is the time the mel stage took.
+    fn predict_and_decode(&mut self, mel: Tensor, mel_time: Duration) -> Result<TimedAnalysis> {
         let t = std::time::Instant::now();
         let (beat_logits, downbeat_logits) = self.predictor.predict(&mel)?;
         let predict_time = t.elapsed();

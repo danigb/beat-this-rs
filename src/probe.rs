@@ -6,7 +6,7 @@
 
 use anyhow::Result;
 
-use crate::{BeatThis, Model, Tensor};
+use crate::{BeatAnalysis, BeatStream, BeatThis, Model, Tensor};
 
 pub use crate::audio::StreamResampler;
 pub use crate::mel::MelStream;
@@ -58,8 +58,9 @@ pub fn resample(samples: Vec<f32>, source_sr: u32) -> Result<Vec<f32>> {
     crate::audio::resample(samples, source_sr, crate::TARGET_SAMPLE_RATE)
 }
 
-/// Build the mel input exactly as the pipeline does before its first graph run (`mel.rs`
-/// `extract_owned` → `extract_windowed` → `run_window`, and `runtime/rten.rs` `run`): the mel graph
+/// Build the mel input exactly as the whole-buffer mel stage does before its first graph run
+/// (`mel.rs` `extract_owned` → `extract_windowed` → `run_window`, and `runtime/rten.rs` `run`;
+/// since ticket 05 the pipeline itself goes through `BeatStream`, whose windows are the same): the mel graph
 /// now runs per window, so the input is a `Tensor` holding a copy of the first window's samples
 /// (`min(n, one window)`), and rten is handed a borrowed view of it. The whole signal stays alive
 /// alongside, as it does in the pipeline. Returns without running the graph; the result is the
@@ -79,7 +80,8 @@ pub fn mel_input(samples: Vec<f32>) -> Result<usize> {
     Ok(std::hint::black_box(&input).data.len() * std::mem::size_of::<f32>())
 }
 
-/// The mel stage exactly as the pipeline runs it.
+/// The whole-buffer mel stage: `MelExtractor::extract_owned`, which the pipeline ran before
+/// ticket 05 routed `analyze_*` through `BeatStream`. Kept to measure and test the building block.
 pub fn mel<M: Model>(bt: &mut BeatThis<M>, samples: Vec<f32>) -> Result<Tensor> {
     bt.mel.extract_owned(samples)
 }
@@ -102,3 +104,48 @@ pub const MEL_STRIDE: usize = crate::mel::MEL_STRIDE;
 pub fn mel_windowed<M: Model>(model: &mut M, samples: &[f32], stride: usize) -> Result<Tensor> {
     crate::mel::extract_windowed(model, samples, stride)
 }
+
+/// The pipeline as `analyze_owned` ran it before ticket 05 routed it through `BeatStream`: the
+/// whole signal resampled (`resample`), the windowed mel over the whole 22 050 Hz buffer
+/// (`extract_owned`), then the beat model and peak picking. The identity tests compare `stream`
+/// against it, which is what proves the routing bit-identical.
+pub fn analyze_whole_buffer<M: Model>(
+    bt: &mut BeatThis<M>,
+    samples: Vec<f32>,
+    sample_rate: u32,
+) -> Result<BeatAnalysis> {
+    let samples = if sample_rate != crate::TARGET_SAMPLE_RATE {
+        crate::audio::resample(samples, sample_rate, crate::TARGET_SAMPLE_RATE)?
+    } else {
+        samples
+    };
+    let mel = bt.mel.extract_owned(samples)?;
+    Ok(bt
+        .predict_and_decode(mel, std::time::Duration::ZERO)?
+        .analysis)
+}
+
+/// The beat model and peak picking on a mel spectrogram, as `BeatStream::finish` runs them.
+pub fn predict_decode<M: Model>(bt: &mut BeatThis<M>, mel: Tensor) -> Result<BeatAnalysis> {
+    Ok(bt
+        .predict_and_decode(mel, std::time::Duration::ZERO)?
+        .analysis)
+}
+
+/// The mel model of a `BeatThis`, for test-side compositions of the stream's building blocks.
+pub fn mel_model<M: Model>(bt: &mut BeatThis<M>) -> &mut M {
+    bt.mel.model_mut()
+}
+
+/// Floats of buffer capacity a `BeatStream` holds between pushes outside the mel frames (resampler
+/// state, mel window buffer, scratch), and the capacity of its mel frames buffer.
+pub fn stream_retained<M: Model>(stream: &BeatStream<'_, M>) -> (usize, usize) {
+    stream.retained_floats()
+}
+
+/// Samples in the longest mel window of the pipeline; the mel stream's sample buffer is reserved
+/// at this size and never grows.
+pub const MEL_WINDOW_SAMPLES: usize = 441 * (crate::mel::MEL_STRIDE + 2 * 64 - 1);
+
+/// Native frames the resampler takes per rubato call.
+pub const RESAMPLE_CHUNK: usize = crate::audio::RESAMPLE_CHUNK;

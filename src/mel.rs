@@ -16,6 +16,11 @@ impl<M: Model> MelExtractor<M> {
         Self { model }
     }
 
+    /// Get a mutable reference to the underlying model.
+    pub fn model_mut(&mut self) -> &mut M {
+        &mut self.model
+    }
+
     /// Extract mel spectrogram from mono PCM samples at 22050 Hz.
     ///
     /// Input: mono f32 samples (any length); they are freed as soon as the mel is computed.
@@ -197,7 +202,9 @@ impl MelStream {
         Self {
             stride,
             k: 0,
-            buf: Vec::new(),
+            // The longest window (any window after the first), reserved once so the buffer never
+            // grows by doubling.
+            buf: Vec::with_capacity(HOP * (stride + 2 * MEL_HALO - 1)),
             buf_start: 0,
             total: 0,
             frames: Vec::new(),
@@ -207,6 +214,17 @@ impl MelStream {
     /// Frames emitted so far.
     pub fn frames_emitted(&self) -> usize {
         self.frames.len() / N_MELS
+    }
+
+    /// Floats of sample-buffer capacity held between calls: one window's samples, reserved up
+    /// front, whatever the input length. The emitted mel frames are not counted (see [`Self::frames_capacity`]).
+    pub(crate) fn retained_floats(&self) -> usize {
+        self.buf.capacity()
+    }
+
+    /// Floats of capacity of the emitted-frames buffer.
+    pub(crate) fn frames_capacity(&self) -> usize {
+        self.frames.capacity()
     }
 
     /// Run window `self.k` over the buffer, keep its owned frames, and drop the samples that the

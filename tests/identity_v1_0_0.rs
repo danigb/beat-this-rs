@@ -1227,3 +1227,351 @@ fn windowed_mel_naive_halo_diagnostic() {
         );
     }
 }
+
+// --- ticket 05: the streaming front end -----------------------------------------------------------
+
+/// Panics unless two current-pipeline analyses are bit-identical everywhere.
+fn assert_same_analysis(what: &str, a: &BeatAnalysis, b: &BeatAnalysis) {
+    assert_eq!(a.mel.shape, b.mel.shape, "{what}: mel shape");
+    assert_bits_eq(&format!("{what}: mel"), &a.mel.data, &b.mel.data);
+    assert_bits_eq(
+        &format!("{what}: beat_logits"),
+        &a.beat_logits,
+        &b.beat_logits,
+    );
+    assert_bits_eq(
+        &format!("{what}: downbeat_logits"),
+        &a.downbeat_logits,
+        &b.downbeat_logits,
+    );
+    assert_bits_eq(&format!("{what}: beats"), &a.beats, &b.beats);
+    assert_bits_eq(&format!("{what}: downbeats"), &a.downbeats, &b.downbeats);
+}
+
+/// `BeatThis::stream`, fed `push` samples at a time (`push >= 1`).
+fn stream_analyze(
+    bt: &mut NewBt,
+    x: &[f32],
+    rate: u32,
+    push: usize,
+) -> anyhow::Result<BeatAnalysis> {
+    let mut stream = bt.stream(rate)?;
+    for piece in x.chunks(push) {
+        stream.push(piece)?;
+    }
+    stream.finish()
+}
+
+/// How a test-side composition of the stream's building blocks is wired. `Production` mirrors
+/// `BeatStream` exactly (its output must equal `stream`'s, bit for bit); the others each break the
+/// code path in one place, and must be seen by the identity comparisons.
+#[derive(Clone, Copy, Debug)]
+enum StreamPlan {
+    Production,
+    /// A fresh resampler for every push, flushed at the end of each: resampler state is lost at
+    /// push boundaries.
+    ResamplerPerPush,
+    /// The resampler's end-of-stream flush is replaced by zeros of the same length.
+    ZeroFlush,
+    /// The first sample of every push after the first is lost and replaced by zero before the mel
+    /// stage (an off-by-one at the push boundary; the length is unchanged).
+    ZeroPushBoundary,
+}
+
+fn composed_stream(
+    bt: &mut NewBt,
+    x: &[f32],
+    rate: u32,
+    push: usize,
+    plan: StreamPlan,
+) -> anyhow::Result<BeatAnalysis> {
+    let mut resampler = (rate != 22050).then(|| StreamResampler::new(rate, 22050).unwrap());
+    let mut mel = __probe::MelStream::new(__probe::MEL_STRIDE);
+    let mut scratch = Vec::new();
+    for (i, piece) in x.chunks(push).enumerate() {
+        let mut piece = piece.to_vec();
+        if matches!(plan, StreamPlan::ZeroPushBoundary) && i > 0 {
+            piece[0] = 0.0;
+        }
+        match plan {
+            StreamPlan::ResamplerPerPush if rate != 22050 => {
+                let mut r = StreamResampler::new(rate, 22050).unwrap();
+                r.push(&piece, &mut scratch)?;
+                r.finish(&mut scratch)?;
+                mel.push(__probe::mel_model(bt), &scratch)?;
+                scratch.clear();
+            }
+            _ => match &mut resampler {
+                Some(r) => {
+                    for sub in piece.chunks(__probe::RESAMPLE_CHUNK) {
+                        r.push(sub, &mut scratch)?;
+                        mel.push(__probe::mel_model(bt), &scratch)?;
+                        scratch.clear();
+                    }
+                }
+                None => mel.push(__probe::mel_model(bt), &piece)?,
+            },
+        }
+    }
+    if !matches!(plan, StreamPlan::ResamplerPerPush) || rate == 22050 {
+        if let Some(r) = resampler {
+            r.finish(&mut scratch)?;
+            if matches!(plan, StreamPlan::ZeroFlush) {
+                scratch.fill(0.0);
+            }
+            mel.push(__probe::mel_model(bt), &scratch)?;
+        }
+    }
+    let mel = mel.finish(__probe::mel_model(bt))?;
+    __probe::predict_decode(bt, mel)
+}
+
+fn assert_differs(what: &str, a: &BeatAnalysis, b: &BeatAnalysis) {
+    let outcome = catch_unwind(AssertUnwindSafe(|| assert_same_analysis(what, a, b)));
+    assert!(outcome.is_err(), "{what}: the comparison saw no difference");
+}
+
+#[test]
+fn stream_push_size_invariance() {
+    require_models!();
+    let mut bt = new_bt();
+    for rate in [22050u32, 44100, 48000] {
+        let x = forty_seconds(rate);
+        let reference = stream_analyze(&mut bt, &x, rate, 8192).unwrap();
+        for push in [7usize, 8193, x.len()] {
+            let got = stream_analyze(&mut bt, &x, rate, push).unwrap();
+            assert_same_analysis(&format!("push {push} @ {rate}"), &got, &reference);
+        }
+        // Empty pushes between the pieces change nothing.
+        let mut stream = bt.stream(rate).unwrap();
+        stream.push(&[]).unwrap();
+        for piece in x.chunks(10_000) {
+            stream.push(piece).unwrap();
+            stream.push(&[]).unwrap();
+        }
+        let got = stream.finish().unwrap();
+        assert_same_analysis(&format!("empty pushes @ {rate}"), &got, &reference);
+
+        // One sample at a time, on 5 s.
+        let short = &x[..5 * rate as usize];
+        let reference = stream_analyze(&mut bt, short, rate, 8192).unwrap();
+        let got = stream_analyze(&mut bt, short, rate, 1).unwrap();
+        assert_same_analysis(&format!("push 1 @ {rate}"), &got, &reference);
+    }
+}
+
+#[test]
+fn stream_matches_v1_0_0() {
+    require_models!();
+    let mut bt = new_bt();
+    let mut v1 = v1_bt();
+    for rate in [22050u32, 44100, 88200, 48000, 32000] {
+        let x = forty_seconds(rate);
+        let current = stream_analyze(&mut bt, &x, rate, 8192).unwrap();
+        let old = v1.analyze_audio(&x, rate).unwrap();
+        // Bit identity at 22 050 and 22 050 * 2^k, the D1 drift check (beats bit-identical) at the
+        // 48 kHz class.
+        assert_same_or_drift(&format!("stream @ {rate}"), rate, &current, &old);
+    }
+}
+
+/// `stream` against the whole-buffer pipeline that `analyze_owned` ran before ticket 05 (whole
+/// resample, windowed mel over the whole buffer), and against the routed 1.x methods.
+#[test]
+fn stream_matches_analyze_owned() {
+    require_models!();
+    let mut bt = new_bt();
+    for rate in [22050u32, 44100, 88200, 48000, 32000] {
+        let x = forty_seconds(rate);
+        let whole = __probe::analyze_whole_buffer(&mut bt, x.clone(), rate).unwrap();
+        // Push-size invariance is covered by `stream_push_size_invariance`; 8193 straddles the
+        // resampler's chunk boundary.
+        let got = stream_analyze(&mut bt, &x, rate, 8193).unwrap();
+        assert_same_analysis(&format!("stream vs whole buffer @ {rate}"), &got, &whole);
+        // `analyze_audio` shares `analyze_owned`'s route (one push of the whole signal).
+        let owned = bt.analyze_owned(x, rate).unwrap();
+        assert_same_analysis(&format!("analyze_owned @ {rate}"), &owned, &whole);
+    }
+}
+
+/// Degradations that break the stream's code path rather than its input: the test-side
+/// composition wired as production must match `stream` bit for bit, and each broken wiring must be
+/// caught, both against the whole-buffer pipeline and as a push-size dependence.
+#[test]
+fn stream_degradations() {
+    require_models!();
+    let mut bt = new_bt();
+    for rate in [22050u32, 44100, 48000] {
+        let x = Synth::take(rate, 10 * rate as usize);
+        let whole = __probe::analyze_whole_buffer(&mut bt, x.clone(), rate).unwrap();
+        let real = stream_analyze(&mut bt, &x, rate, 8193).unwrap();
+        let control = composed_stream(&mut bt, &x, rate, 8193, StreamPlan::Production).unwrap();
+        assert_same_analysis(&format!("control @ {rate}"), &control, &real);
+        assert_same_analysis(&format!("control vs whole @ {rate}"), &control, &whole);
+        let broken: &[StreamPlan] = if rate == 22050 {
+            &[StreamPlan::ZeroPushBoundary]
+        } else {
+            &[
+                StreamPlan::ResamplerPerPush,
+                StreamPlan::ZeroFlush,
+                StreamPlan::ZeroPushBoundary,
+            ]
+        };
+        for &plan in broken {
+            let got = composed_stream(&mut bt, &x, rate, 8193, plan).unwrap();
+            assert_differs(&format!("{plan:?} @ {rate} vs whole"), &got, &whole);
+            if !matches!(plan, StreamPlan::ZeroFlush) {
+                // Push-size dependent: the same wiring with a different push size differs too.
+                let other = composed_stream(&mut bt, &x, rate, 4096, plan).unwrap();
+                assert_differs(
+                    &format!("{plan:?} @ {rate}, push 4096 vs 8193"),
+                    &other,
+                    &got,
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn stream_edge_cases() {
+    require_models!();
+    let mut bt = new_bt();
+    let mut v1 = v1_bt();
+
+    // A rate of 0 is an error when the stream is created, as `analyze_audio` errs at that rate.
+    assert!(bt.stream(0).is_err(), "stream(0) must be an error");
+    assert!(bt.analyze_audio(&Synth::take(22050, 1000), 0).is_err());
+
+    for rate in [22050u32, 48000] {
+        // Nothing pushed, or only empty pushes: an error, like 1.0.0 on an empty signal.
+        assert!(
+            bt.stream(rate).unwrap().finish().is_err(),
+            "no push @ {rate}"
+        );
+        let mut stream = bt.stream(rate).unwrap();
+        stream.push(&[]).unwrap();
+        stream.push(&[]).unwrap();
+        assert!(stream.finish().is_err(), "empty pushes @ {rate}");
+        assert!(v1.analyze_audio(&[], rate).is_err());
+
+        let lengths: Vec<usize> = (0..=8).chain([440, 441, 442, 512, 513]).collect();
+        let (mut ok, mut err) = (0, 0);
+        for n in lengths {
+            let x = Synth::take(rate, n);
+            let old = v1.analyze_audio(&x, rate);
+            let whole = __probe::analyze_whole_buffer(&mut bt, x.clone(), rate);
+            for push in [1usize, n.max(1)] {
+                let got = stream_analyze(&mut bt, &x, rate, push);
+                let what = format!("stream n={n} push {push} @ {rate}");
+                assert_eq!(got.is_err(), old.is_err(), "{what}: error vs 1.0.0");
+                assert_eq!(got.is_err(), whole.is_err(), "{what}: error vs whole");
+                if let (Ok(g), Ok(o), Ok(w)) = (&got, &old, &whole) {
+                    assert_same_or_drift(&what, rate, g, o);
+                    assert_same_analysis(&what, g, w);
+                    ok += 1;
+                } else {
+                    err += 1;
+                }
+            }
+        }
+        assert!(ok > 0 && err > 0, "edge cases @ {rate}: {ok} ok, {err} err");
+    }
+
+    // An extreme downsampling ratio goes through the resampler's bounded flush and terminates with
+    // the whole-buffer result.
+    let sr = 4_000_000_000u32;
+    let x = Synth::take(22050, 600_000);
+    let got = stream_analyze(&mut bt, &x, sr, 8192);
+    let whole = __probe::analyze_whole_buffer(&mut bt, x.clone(), sr);
+    assert_eq!(got.is_err(), whole.is_err(), "4 GHz: error behaviour");
+    if let (Ok(g), Ok(w)) = (&got, &whole) {
+        assert_same_analysis("4 GHz", g, w);
+    }
+}
+
+/// Memory held between pushes, outside the mel frames, is bounded by the chunk and window sizes,
+/// whatever the input length and push size (no buffer whose capacity grows with the input).
+#[test]
+fn stream_retains_o_chunk() {
+    require_models!();
+    let mut bt = new_bt();
+    // The mel window buffer (reserved once) plus a few resampler chunks.
+    let bound = __probe::MEL_WINDOW_SAMPLES + 8 * __probe::RESAMPLE_CHUNK;
+    for rate in [22050u32, 44100, 48000] {
+        let n = 100 * rate as usize;
+        let early = 50 * rate as usize;
+        for push in [1000usize, 8192, 100_003, n] {
+            let mut synth = Synth::new(rate);
+            let mut piece = vec![0.0f32; push];
+            let mut stream = bt.stream(rate).unwrap();
+            let (mut max_early, mut max_all, mut fed) = (0usize, 0usize, 0usize);
+            while fed < n {
+                let take = push.min(n - fed);
+                synth.fill(&mut piece[..take]);
+                stream.push(&piece[..take]).unwrap();
+                fed += take;
+                let (pcm, frames) = __probe::stream_retained(&stream);
+                assert!(
+                    pcm <= bound,
+                    "push {push} @ {rate}: {pcm} floats retained after {fed} samples (bound {bound})"
+                );
+                // The mel frames grow with the input, by doubling at worst.
+                let emitted_max = (1 + fed * 22050 / rate as usize / 441) * 128;
+                assert!(
+                    frames <= 2 * emitted_max,
+                    "push {push} @ {rate}: {frames} frame floats"
+                );
+                max_all = max_all.max(pcm);
+                if fed <= early {
+                    max_early = max_early.max(pcm);
+                }
+            }
+            if push < early {
+                assert!(
+                    max_all <= max_early,
+                    "push {push} @ {rate}: retained grew after 50 s ({max_early} -> {max_all})"
+                );
+            }
+            eprintln!("push {push} @ {rate}: max retained {max_all} floats outside the mel frames");
+            if push == 8192 {
+                let analysis = stream.finish().unwrap();
+                let pcm_len = if rate == 22050 {
+                    n
+                } else {
+                    __probe::one_shot_len(n, rate)
+                };
+                assert_eq!(analysis.mel.shape[1], 1 + pcm_len / 441);
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "long: run with --release -- --ignored"]
+fn stream_long() {
+    require_models!();
+    eprintln!("beat model: {}", beat_model_path());
+    let mut bt = new_bt();
+    let mut v1 = v1_bt();
+    for rate in [48000u32, 44100] {
+        let x = Synth::take(rate, 20 * 60 * rate as usize);
+        let got = stream_analyze(&mut bt, &x, rate, 8192).unwrap();
+        let whole = __probe::analyze_whole_buffer(&mut bt, x.clone(), rate).unwrap();
+        assert_same_analysis(&format!("20 min @ {rate}: stream vs whole"), &got, &whole);
+        drop(whole);
+        let old = v1.analyze_audio(&x, rate).unwrap();
+        assert_same_or_drift(
+            &format!("20 min @ {rate}: stream vs 1.0.0"),
+            rate,
+            &got,
+            &old,
+        );
+        let how = if rate_is_exact(rate) {
+            "identical to 1.0.0"
+        } else {
+            "within drift bounds of 1.0.0, beats identical"
+        };
+        eprintln!("20 min @ {rate}: stream identical to the whole-buffer path; {how}");
+    }
+}

@@ -185,10 +185,21 @@ for (i, &t) in analysis.beats.iter().enumerate() {
 is `[1, T, 128]`. To use the ONNX Runtime backend instead, swap `&RtenRuntime` for
 `&OrtRuntime::default()` (requires the ONNX Runtime dylib — see [Install](#install)).
 
-If you already hold decoded mono audio in memory, use `analyze_audio(&samples, rate)`, which
-copies the slice once, or, for large inputs, `analyze_owned(samples, rate)`, which consumes the
-`Vec<f32>` instead of copying it and frees it as soon as resampling is done. Both return the same
-analysis, bit for bit.
+If you already hold decoded mono audio in memory, use `analyze_audio(&samples, rate)`, or
+`analyze_owned(samples, rate)`, which consumes the `Vec<f32>` and frees it before the beat model
+runs. For long inputs, don't build the whole signal at all: push mono chunks of any size into a
+stream as you decode them.
+
+```rust
+let mut stream = bt.stream(48_000)?;      // the chunks' sample rate
+for chunk in decoded_chunks {             // mono f32, any chunk size
+    stream.push(&chunk)?;
+}
+let analysis = stream.finish()?;          // or finish_timed() for per-stage timing
+```
+
+The stream holds O(chunk) of audio plus the mel spectrogram (about 92 MB per hour). All three
+return the same analysis, bit for bit, whatever the chunk sizes.
 
 ## Output formats
 

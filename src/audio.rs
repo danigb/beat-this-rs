@@ -125,7 +125,7 @@ fn sinc_params() -> SincInterpolationParameters {
 }
 
 /// Input chunk fed to rubato by [`StreamResampler`]. Keeps rubato's buffers to ~70 KB.
-const RESAMPLE_CHUNK: usize = 8192;
+pub(crate) const RESAMPLE_CHUNK: usize = 8192;
 
 /// Output length of the one-shot [`resample`] call for `n` input frames: rubato 3.0.0
 /// `Async::calculate_output_size` (asynchro.rs:384-386) with `chunk_size = n`,
@@ -233,6 +233,13 @@ impl StreamResampler {
         let k = cap.saturating_sub(self.released).min(self.produced.len());
         out.extend(self.produced.drain(..k));
         self.released += k;
+    }
+
+    /// Floats of buffer capacity held between calls (pending input, unreleased output, rubato's
+    /// output scratch). Bounded by a few chunks whatever the input length; rubato's own buffers,
+    /// sized at construction from `RESAMPLE_CHUNK`, are not counted.
+    pub(crate) fn retained_floats(&self) -> usize {
+        self.pending.capacity() + self.produced.capacity() + self.out_buf.capacity()
     }
 
     /// Feed native-rate mono; append releasable output to `out`.
