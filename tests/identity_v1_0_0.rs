@@ -324,7 +324,7 @@ fn tiny_inputs_match_v1_0_0() {
     let mut v1 = v1_bt();
     let lengths: Vec<usize> = (0..=8).chain([511, 512, 513, 1023, 1024, 1025]).collect();
     let (mut ok, mut err) = (0, 0);
-    for rate in [22050u32, 48000] {
+    for rate in [22050u32, 44100, 48000] {
         for &n in &lengths {
             let x = Synth::take(rate, n);
             let current = new.analyze_audio(&x, rate);
@@ -679,4 +679,27 @@ fn corpus_files(root: &Path) -> Vec<std::path::PathBuf> {
     }
     files.sort();
     files
+}
+
+/// The routed `resample` (chunked where exact, one-shot otherwise) against the 1.0.0 one-shot call,
+/// including tiny inputs and the error behaviour.
+#[test]
+fn routed_resample_matches_v1_0_0() {
+    for sr in [11025u32, 44100, 88200, 48000, 32000] {
+        let big = Synth::take(sr, 20_000);
+        let lengths = (0..=40usize)
+            .chain((41..2000).step_by(61))
+            .chain([8191, 8192, 8193, 16384, 20_000]);
+        for n in lengths {
+            let x = &big[..n];
+            let old = audio::resample(x.to_vec(), sr, 22050);
+            let new = __probe::resample(x.to_vec(), sr);
+            assert_eq!(old.is_err(), new.is_err(), "error behaviour @ {sr}, n={n}");
+            // Exact rates go through the chunked path and must match it; the others take the
+            // one-shot path, which is the reference itself.
+            if let (Ok(o), Ok(c)) = (old, new) {
+                assert_bits_eq(&format!("routed resample @ {sr}, n={n}"), &c, &o);
+            }
+        }
+    }
 }

@@ -265,11 +265,29 @@ impl StreamResampler {
 
 /// Resample mono audio from `source_sr` to `target_sr` using sinc interpolation.
 /// Returns samples unchanged if rates already match.
+///
+/// Where chunked processing is provably bit-identical to the one-shot call
+/// ([`chunking_is_exact`]: sources of 22050 * 2^k Hz, such as 44.1 kHz) the signal is resampled in
+/// fixed chunks, so rubato's buffers stay small and the input is freed before the flush. Other
+/// rates use the one-shot call, which is O(signal) in memory; see [`StreamResampler`] for the
+/// chunked path at any rate.
 pub fn resample(samples: Vec<f32>, source_sr: u32, target_sr: u32) -> Result<Vec<f32>> {
     if source_sr == target_sr {
         return Ok(samples);
     }
+    if chunking_is_exact(source_sr, target_sr) {
+        let mut resampler = StreamResampler::new(source_sr, target_sr)?;
+        let mut out = Vec::with_capacity(one_shot_len(samples.len(), resampler.ratio));
+        resampler.push(&samples, &mut out)?;
+        drop(samples);
+        resampler.finish(&mut out)?;
+        return Ok(out);
+    }
+    resample_one_shot(samples, source_sr, target_sr)
+}
 
+/// The whole input as one rubato chunk.
+fn resample_one_shot(samples: Vec<f32>, source_sr: u32, target_sr: u32) -> Result<Vec<f32>> {
     let params = sinc_params();
 
     // rubato 3.0: `SincFixedIn` became `Async` with `FixedAsync::Input`. We

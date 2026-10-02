@@ -10,6 +10,8 @@
 //!
 //! - `models`: load both models.
 //! - `resample`: synthesise native-rate mono, then `to_vec` + `resample` as `analyze_audio` does.
+//! - `resample-stream`: push the synthetic signal in 8192-frame pieces through `StreamResampler`,
+//!   collecting the output; the native-rate input never exists whole.
 //! - `mel-input`: ... then build the mel graph's input (the `Tensor` and rten's input value)
 //!   without running the graph. Splits the PCM copies from the graph intermediates.
 //! - `mel`: ... then run the mel graph.
@@ -115,6 +117,23 @@ fn main() -> Result<()> {
             }
             black_box(&mono);
         }
+        "resample-stream" => {
+            // The synthetic input is generated in 8192-frame pieces and pushed through the
+            // chunked resampler; the whole input never exists.
+            let mut synth = Synth::new(args.rate);
+            let mut resampler = __probe::StreamResampler::new(args.rate, 22050)?;
+            let mut pcm = Vec::with_capacity(__probe::one_shot_len(n, args.rate));
+            let mut piece = vec![0.0f32; 8192];
+            let mut left = n;
+            while left > 0 {
+                let take = left.min(piece.len());
+                synth.fill(&mut piece[..take]);
+                resampler.push(&piece[..take], &mut pcm)?;
+                left -= take;
+            }
+            resampler.finish(&mut pcm)?;
+            black_box(&pcm);
+        }
         "full" => {
             let mono = Synth::take(args.rate, n);
             black_box(bt.analyze_audio(&mono, args.rate)?);
@@ -125,7 +144,7 @@ fn main() -> Result<()> {
             let mono = Synth::take(args.rate, n);
             black_box(bt.analyze_owned(mono, args.rate)?);
         }
-        other => bail!("unknown stage '{other}' (models|resample|mel-input|mel|full|full-owned)"),
+        other => bail!("unknown stage '{other}' (models|resample|resample-stream|mel-input|mel|full|full-owned)"),
     }
 
     println!(
