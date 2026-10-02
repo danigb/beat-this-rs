@@ -5,6 +5,8 @@
 //! Each including test crate uses a different subset, so allow unused items here.
 #![allow(dead_code)]
 
+pub mod bits;
+
 use serde::Deserialize;
 use std::path::Path;
 
