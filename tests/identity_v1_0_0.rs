@@ -84,6 +84,12 @@ fn v1_bt() -> OldBt {
 /// Skip with a message when the committed models are missing (same pattern as the other tests).
 macro_rules! require_models {
     () => {
+        if let Ok(path) = std::env::var("BEAT_THIS_MODEL") {
+            assert!(
+                Path::new(&path).exists(),
+                "BEAT_THIS_MODEL is set to {path}, which does not exist"
+            );
+        }
         if !models_present() {
             eprintln!("Skipping test: required models not found");
             return;
@@ -446,6 +452,9 @@ fn resampler_drift_report_48000() {
     let d = bit_diff(&first, &reference);
     eprintln!("48 kHz, 10 s drift vs 1.0.0: {d:?}");
     assert!(d.max_abs <= 1e-6, "drift grew: {d:?}");
+    // Degradation: at 48 kHz chunking does change the output, so a comparison that saw nothing
+    // here would not be comparing the chunked path.
+    assert!(d.differing > 0, "48 kHz chunking shows no drift: {d:?}");
 }
 
 #[test]
@@ -962,6 +971,69 @@ fn windowed_mel_degradations() {
     let truncated = reference.extract(&x[..n - 1]).unwrap();
     let d = bit_diff(&shifted.data, &truncated.data);
     assert!(d.differing > 0, "a one-sample shift went unnoticed: {d:?}");
+}
+
+/// The window plan of `extract_windowed`, written out with a configurable halo: window `k` owns
+/// frames `[k*stride, (k+1)*stride)` and reads `halo` frames of context on each side.
+fn mel_with_halo(model: &mut NewMelModel, x: &[f32], stride: usize, halo: usize) -> Vec<f32> {
+    let n = x.len();
+    let total = 1 + n / HOP;
+    let mut data = Vec::with_capacity(total * 128);
+    let mut k = 0;
+    loop {
+        let o = (k * stride).saturating_sub(halo);
+        let interior_end = HOP * ((k + 1) * stride + halo - 1);
+        let (end, frames, keep_end) = if interior_end <= n {
+            (
+                interior_end,
+                (k + 1) * stride + halo - o,
+                (k + 1) * stride - o,
+            )
+        } else {
+            (n, total - o, total - o)
+        };
+        let input = beat_this::Tensor {
+            shape: vec![1, end - HOP * o],
+            data: x[HOP * o..end].to_vec(),
+        };
+        let out = beat_this::Model::run(model, &[("audio_pcm", &input)]).unwrap();
+        let mel = &out["mel_spectrogram"];
+        assert_eq!(mel.shape[1], frames, "window {k} frames");
+        data.extend_from_slice(&mel.data[(k * stride - o) * 128..keep_end * 128]);
+        if interior_end > n {
+            return data;
+        }
+        k += 1;
+    }
+}
+
+/// Degradation that breaks the window plan rather than the input: with a 1-frame halo the first
+/// owned frame of every window after the first reads the window's own reflect padding instead of
+/// real samples. That is a structural difference, not rounding, so it must show on every CPU.
+/// The control (the production halo through the same helper) must match.
+#[test]
+fn windowed_mel_degradation_short_halo() {
+    if !Path::new(MEL_MODEL_PATH).exists() {
+        eprintln!("Skipping test: mel model not found");
+        return;
+    }
+    let mut reference = ref_mel();
+    let mut model = new_mel_model();
+    let x = Synth::take(22050, 10 * 22050);
+    let expected = reference.extract(&x).unwrap();
+    let control = mel_with_halo(&mut model, &x, 64, 64);
+    assert_bits_eq("halo 64 (control)", &control, &expected.data);
+    let broken = mel_with_halo(&mut model, &x, 64, 1);
+    let d = bit_diff(&broken, &expected.data);
+    assert!(d.differing > 0, "a 1-frame halo went unnoticed: {d:?}");
+    // The damage is in the first owned frame of window 1 (global frame 64).
+    let row = |v: &[f32]| {
+        v[64 * 128..65 * 128]
+            .iter()
+            .map(|f| f.to_bits())
+            .collect::<Vec<_>>()
+    };
+    assert_ne!(row(&broken), row(&expected.data), "frame 64 should differ");
 }
 
 #[test]

@@ -67,7 +67,7 @@ struct Window {
     keep: (usize, usize),
 }
 
-/// A positive multiple of `MEL_ALIGN` (a power of two). Not `is_multiple_of`: that needs Rust 1.90.
+/// A positive multiple of `MEL_ALIGN` (a power of two), tested with a mask.
 fn valid_stride(stride: usize) -> bool {
     stride > 0 && stride & (MEL_ALIGN - 1) == 0
 }
