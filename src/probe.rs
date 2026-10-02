@@ -55,23 +55,24 @@ pub fn resample(samples: Vec<f32>, source_sr: u32) -> Result<Vec<f32>> {
     crate::audio::resample(samples, source_sr, crate::TARGET_SAMPLE_RATE)
 }
 
-/// Build the mel input exactly as 1.0.0 does before running the graph (`mel.rs` `extract` and
-/// `runtime/rten.rs` `run`): the `Tensor` copy and rten's input value copy, both kept alive.
-/// Returns without running the graph; the result is the number of bytes held.
+/// Build the mel input exactly as the pipeline does before running the graph (`mel.rs`
+/// `extract_owned` and `runtime/rten.rs` `run`): the `Tensor` takes the samples by move and rten is
+/// handed a borrowed view of them, so no PCM copy is made. Returns without running the graph; the
+/// result is the number of bytes held.
 ///
 /// Must be updated in lockstep whenever the real input path changes.
-pub fn mel_input(samples: &[f32]) -> Result<usize> {
+pub fn mel_input(samples: Vec<f32>) -> Result<usize> {
     let input = Tensor {
         shape: vec![1, samples.len()],
-        data: samples.to_vec(),
+        data: samples,
     };
-    let value = rten::Value::from_shape(input.shape.as_slice(), input.data.clone())
+    let value = rten::ValueView::from_shape(input.shape.as_slice(), input.data.as_slice())
         .map_err(|e| anyhow::anyhow!("rten: failed to create input tensor: {e}"))?;
     std::hint::black_box(&value);
-    Ok(std::hint::black_box(&input).data.len() * 2 * std::mem::size_of::<f32>())
+    Ok(std::hint::black_box(&input).data.len() * std::mem::size_of::<f32>())
 }
 
 /// The mel stage exactly as the pipeline runs it.
-pub fn mel<M: Model>(bt: &mut BeatThis<M>, samples: &[f32]) -> Result<Tensor> {
-    bt.mel.extract(samples)
+pub fn mel<M: Model>(bt: &mut BeatThis<M>, samples: Vec<f32>) -> Result<Tensor> {
+    bt.mel.extract_owned(samples)
 }

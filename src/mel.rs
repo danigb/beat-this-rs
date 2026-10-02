@@ -18,15 +18,16 @@ impl<M: Model> MelExtractor<M> {
 
     /// Extract mel spectrogram from mono PCM samples at 22050 Hz.
     ///
-    /// Input: mono f32 samples (any length).
+    /// Input: mono f32 samples (any length), taken by value so building the input tensor is a
+    /// move rather than a copy.
     /// Output: Tensor with shape `[1, time_frames, 128]`.
     ///
     /// The number of time frames depends on sample count:
     /// `time_frames ≈ samples.len() / 441` (hop_length=441 for 50 fps at 22050 Hz).
-    pub fn extract(&mut self, samples: &[f32]) -> Result<Tensor> {
+    pub fn extract_owned(&mut self, samples: Vec<f32>) -> Result<Tensor> {
         let input = Tensor {
             shape: vec![1, samples.len()],
-            data: samples.to_vec(),
+            data: samples,
         };
 
         let mut outputs = self.model.run(&[("audio_pcm", &input)])?;

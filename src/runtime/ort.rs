@@ -98,6 +98,7 @@ impl Model for OrtModel {
             .iter()
             .map(|(name, tensor)| {
                 let shape: Vec<usize> = tensor.shape.clone();
+                // The ort backend is a maintainer oracle; this input copy is accepted here.
                 let array = ArrayD::from_shape_vec(shape, tensor.data.clone())?;
                 let value: DynValue = Value::from_array(array).map_err(ort_err)?.into_dyn();
                 Ok((name.to_string(), value))

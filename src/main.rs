@@ -604,7 +604,7 @@ fn process_single_file<M: Model>(
         );
     }
 
-    let timed = bt.analyze_audio_timed(&audio.samples, audio.sample_rate)?;
+    let timed = bt.analyze_owned_timed(audio.samples, audio.sample_rate)?;
     if verbose {
         eprintln!(
             "[timing] Mel spectrogram: {:.3}s ({} frames)",

@@ -111,6 +111,9 @@ impl<M: Model> BeatThis<M> {
     ///
     /// The samples are resampled to 22050 Hz if `sample_rate` differs.
     /// Input should be mono f32 PCM.
+    ///
+    /// The slice is copied once. For large inputs prefer [`analyze_owned`](Self::analyze_owned),
+    /// which consumes the buffer instead.
     pub fn analyze_audio(&mut self, samples: &[f32], sample_rate: u32) -> Result<BeatAnalysis> {
         Ok(self.analyze_audio_timed(samples, sample_rate)?.analysis)
     }
@@ -121,14 +124,32 @@ impl<M: Model> BeatThis<M> {
         samples: &[f32],
         sample_rate: u32,
     ) -> Result<TimedAnalysis> {
+        self.analyze_owned_timed(samples.to_vec(), sample_rate)
+    }
+
+    /// Run the full pipeline on owned mono f32 samples.
+    ///
+    /// Same output as [`analyze_audio`](Self::analyze_audio), bit for bit. Prefer this for large
+    /// inputs: the buffer is consumed, so no copy of it is made, and it is freed as soon as
+    /// resampling is done.
+    pub fn analyze_owned(&mut self, samples: Vec<f32>, sample_rate: u32) -> Result<BeatAnalysis> {
+        Ok(self.analyze_owned_timed(samples, sample_rate)?.analysis)
+    }
+
+    /// Run the full pipeline on owned mono f32 samples, returning per-stage timing.
+    pub fn analyze_owned_timed(
+        &mut self,
+        samples: Vec<f32>,
+        sample_rate: u32,
+    ) -> Result<TimedAnalysis> {
         let samples = if sample_rate != TARGET_SAMPLE_RATE {
-            audio::resample(samples.to_vec(), sample_rate, TARGET_SAMPLE_RATE)?
+            audio::resample(samples, sample_rate, TARGET_SAMPLE_RATE)?
         } else {
-            samples.to_vec()
+            samples
         };
 
         let t = std::time::Instant::now();
-        let mel = self.mel.extract(&samples)?;
+        let mel = self.mel.extract_owned(samples)?;
         let mel_time = t.elapsed();
 
         let t = std::time::Instant::now();
@@ -161,6 +182,6 @@ impl<M: Model> BeatThis<M> {
     /// runs beat prediction, and decodes into beat/downbeat timestamps.
     pub fn analyze_file(&mut self, path: &Path) -> Result<BeatAnalysis> {
         let audio = load_audio(path, TARGET_SAMPLE_RATE)?;
-        self.analyze_audio(&audio.samples, audio.sample_rate)
+        self.analyze_owned(audio.samples, audio.sample_rate)
     }
 }

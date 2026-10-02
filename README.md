@@ -185,6 +185,11 @@ for (i, &t) in analysis.beats.iter().enumerate() {
 is `[1, T, 128]`. To use the ONNX Runtime backend instead, swap `&RtenRuntime` for
 `&OrtRuntime::default()` (requires the ONNX Runtime dylib — see [Install](#install)).
 
+If you already hold decoded mono audio in memory, use `analyze_audio(&samples, rate)`, which
+copies the slice once, or, for large inputs, `analyze_owned(samples, rate)`, which consumes the
+`Vec<f32>` instead of copying it and frees it as soon as resampling is done. Both return the same
+analysis, bit for bit.
+
 ## Output formats
 
 ### JSON (default)

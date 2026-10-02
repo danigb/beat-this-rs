@@ -14,10 +14,11 @@
 //!   without running the graph. Splits the PCM copies from the graph intermediates.
 //! - `mel`: ... then run the mel graph.
 //! - `full`: synthesise native-rate mono, then `analyze_audio` (the caller keeps its buffer).
-//! - `full-owned`: as `full`, through `analyze_owned` (only once that method exists).
+//! - `full-owned`: as `full`, through `analyze_owned`; the caller does not keep the buffer.
 //!
-//! The caller's native-rate mono buffer stays alive through every stage, as it does for a caller
-//! of the borrowed `analyze_audio`.
+//! The caller's native-rate mono buffer stays alive through every stage except `full-owned`, as it
+//! does for a caller of the borrowed `analyze_audio`. `mel-input` and `mel` take the resampled
+//! samples by value, as the pipeline does.
 //!
 //! The probe reaches the crate's private pieces through the `#[doc(hidden)] pub mod __probe`
 //! re-export. That keeps it measuring the real code after later tickets change it, which a
@@ -106,10 +107,10 @@ fn main() -> Result<()> {
                     black_box(&pcm);
                 }
                 "mel-input" => {
-                    black_box(__probe::mel_input(&pcm)?);
+                    black_box(__probe::mel_input(pcm)?);
                 }
                 _ => {
-                    black_box(__probe::mel(&mut bt, &pcm)?);
+                    black_box(__probe::mel(&mut bt, pcm)?);
                 }
             }
             black_box(&mono);
@@ -119,7 +120,12 @@ fn main() -> Result<()> {
             black_box(bt.analyze_audio(&mono, args.rate)?);
             black_box(&mono);
         }
-        other => bail!("unknown stage '{other}' (models|resample|mel-input|mel|full)"),
+        "full-owned" => {
+            // The caller hands the buffer over, so it is not alive alongside the pipeline.
+            let mono = Synth::take(args.rate, n);
+            black_box(bt.analyze_owned(mono, args.rate)?);
+        }
+        other => bail!("unknown stage '{other}' (models|resample|mel-input|mel|full|full-owned)"),
     }
 
     println!(

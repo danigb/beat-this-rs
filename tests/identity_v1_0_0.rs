@@ -254,6 +254,51 @@ fn analyze_audio_matches_v1_0_0_48000() {
     check_analyze_audio(48000);
 }
 
+fn check_analyze_owned(rate: u32) {
+    require_models!();
+    let x = forty_seconds(rate);
+    let current = new_bt().analyze_owned(x.clone(), rate).unwrap();
+    let old = v1_bt().analyze_audio(&x, rate).unwrap();
+    assert_same(&format!("analyze_owned @ {rate}"), &current, &old);
+}
+
+#[test]
+fn analyze_owned_matches_v1_0_0_22050() {
+    check_analyze_owned(22050);
+}
+
+#[test]
+fn analyze_owned_matches_v1_0_0_44100() {
+    check_analyze_owned(44100);
+}
+
+#[test]
+fn analyze_owned_matches_v1_0_0_48000() {
+    check_analyze_owned(48000);
+}
+
+/// `load_audio(mp3, 44100)` returns the native 44.1 kHz mono unchanged (source == target).
+#[test]
+fn analyze_owned_matches_v1_0_0_mp3_native() {
+    require_models!();
+    if !Path::new(TEST_AUDIO_PATH).exists() {
+        eprintln!("Skipping test: test audio not found");
+        return;
+    }
+    let audio = beat_this::load_audio(Path::new(TEST_AUDIO_PATH), 44100).unwrap();
+    assert_eq!(
+        audio.sample_rate, 44100,
+        "fixture is expected to be 44.1 kHz"
+    );
+    let current = new_bt()
+        .analyze_owned(audio.samples.clone(), audio.sample_rate)
+        .unwrap();
+    let old = v1_bt()
+        .analyze_audio(&audio.samples, audio.sample_rate)
+        .unwrap();
+    assert_same("analyze_owned @ mp3 native", &current, &old);
+}
+
 #[test]
 fn analyze_file_matches_v1_0_0() {
     require_models!();
@@ -308,6 +353,9 @@ fn long_inputs_match_v1_0_0() {
             let current = new.analyze_audio(&x, rate).unwrap();
             let old = v1.analyze_audio(&x, rate).unwrap();
             assert_same(&format!("{minutes} min @ {rate}"), &current, &old);
+            drop(current);
+            let owned = new.analyze_owned(x, rate).unwrap();
+            assert_same(&format!("{minutes} min @ {rate} (owned)"), &owned, &old);
             eprintln!("{minutes} min @ {rate}: identical");
         }
     }
