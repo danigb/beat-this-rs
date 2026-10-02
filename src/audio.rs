@@ -27,6 +27,9 @@ pub struct AudioData {
 pub fn load_audio(path: &Path, target_sr: u32) -> Result<AudioData> {
     let (samples, source_sr, channels) = decode(path)?;
     let mono = to_mono(&samples, channels);
+    // The interleaved buffer is not needed past this point; free it before resampling instead of
+    // at the end of the function.
+    drop(samples);
     let resampled = resample(mono, source_sr, target_sr)?;
 
     Ok(AudioData {
