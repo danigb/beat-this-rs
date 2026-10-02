@@ -121,6 +121,7 @@ dependencies = [
  "clap",
  "glob",
  "hound",
+ "libc",
  "ndarray",
  "ort",
  "rten",

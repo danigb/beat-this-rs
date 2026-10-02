@@ -1,3 +1,6 @@
+#[doc(hidden)]
+#[path = "probe.rs"]
+pub mod __probe;
 mod audio;
 mod inference;
 mod mel;
