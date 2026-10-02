@@ -1,3 +1,5 @@
+#![cfg(feature = "decode")]
+
 //! Identity tests against a live, verbatim copy of the 1.0.0 pipeline.
 //!
 //! The reference lives in `tests/common/v1_0_0/`: byte-identical copies of the 1.0.0 `audio`,

@@ -1,4 +1,5 @@
 #![cfg(feature = "ort")]
+#![cfg(feature = "decode")]
 //! Requires the `ort` feature (and libonnxruntime at runtime).
 
 use std::panic::AssertUnwindSafe;

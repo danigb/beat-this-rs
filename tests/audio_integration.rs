@@ -1,3 +1,5 @@
+#![cfg(feature = "decode")]
+
 use beat_this::load_audio;
 use std::path::Path;
 

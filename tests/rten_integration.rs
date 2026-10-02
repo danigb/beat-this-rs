@@ -1,3 +1,5 @@
+#![cfg(feature = "decode")]
+
 use std::path::Path;
 
 use beat_this::{Model, RtenRuntime, Runtime, Tensor};

@@ -4,6 +4,7 @@
 //! beat model on 30-second chunks, and peak picking into beat and downbeat times in seconds.
 //!
 //! ```no_run
+//! # #[cfg(feature = "decode")]
 //! # fn main() -> anyhow::Result<()> {
 //! use beat_this::{BeatThis, RtenRuntime};
 //! use std::path::Path;
@@ -16,6 +17,8 @@
 //! let analysis = bt.analyze_file(Path::new("input.wav"))?;
 //! println!("{} beats", analysis.beats.len());
 //! # Ok(()) }
+//! # #[cfg(not(feature = "decode"))]
+//! # fn main() {}
 //! ```
 //!
 //! # Long inputs
@@ -62,6 +65,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 
+#[cfg(feature = "decode")]
 pub use audio::{load_audio, AudioData};
 pub use output::{beat_counts, calculate_bpm};
 #[cfg(feature = "ort")]
@@ -248,6 +252,7 @@ impl<M: Model> BeatThis<M> {
     ///
     /// Loads the file, resamples to 22050 Hz mono, computes mel spectrogram,
     /// runs beat prediction, and decodes into beat/downbeat timestamps.
+    #[cfg(feature = "decode")]
     pub fn analyze_file(&mut self, path: &Path) -> Result<BeatAnalysis> {
         let audio = load_audio(path, TARGET_SAMPLE_RATE)?;
         self.analyze_owned(audio.samples, audio.sample_rate)

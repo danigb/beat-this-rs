@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
-## [1.1.0] - unreleased
+## [1.1.0] - 2026-10-02
 
 Bounded memory for long inputs. Memory figures are macOS `peak memory footprint` (MiB, median of
 3) on an Apple M4 Pro, full model `beat_this.onnx`, synthetic mono input at 48 kHz unless a figure
@@ -24,6 +24,12 @@ is marked 44.1 kHz.
   The stream mutably borrows the `BeatThis`; with the rten model it is `Send`.
 - `BeatThis::analyze_owned` / `analyze_owned_timed`: take the caller's `Vec<f32>` and free it before
   the beat model runs. Bit-identical to `analyze_audio`.
+- Cargo features `cli`, `decode` and `serde`, all on by default (#13, thanks @mkreu). `cli` gates the
+  binary and its dependencies (`clap`, `glob`, `hound`, `serde_json`); `decode` gates `symphonia`,
+  `load_audio`, `AudioData` and `BeatThis::analyze_file`; `serde` gates `Serialize` /
+  `Deserialize` on `Tensor`. Library users can set `default-features = false` to halve the
+  dependency tree (101 → 53 crates). A 1.0.0 dependency that already set `default-features = false`
+  loses those items until it enables the matching features.
 
 ### Changed
 

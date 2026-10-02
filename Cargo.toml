@@ -26,13 +26,17 @@ exclude = [
 [[bin]]
 name = "beat-this"
 path = "src/main.rs"
+required-features = ["cli"]
 
 [lib]
 name = "beat_this"
 path = "src/lib.rs"
 
 [features]
-default = []
+default = ["decode", "serde", "cli"]
+cli = ["decode", "dep:clap", "dep:glob", "dep:hound", "dep:serde_json", "serde"]
+decode = ["dep:symphonia"]
+serde = ["dep:serde"]
 # Opt-in ONNX Runtime backend (`--runtime ort`). Pure-Rust `rten` is the default
 # and needs no system libraries; `ort` is kept as a maintainer reference oracle
 # (cross-runtime parity, op-level `--profile`) and requires libonnxruntime at
@@ -49,15 +53,17 @@ ndarray = { version = "0.17", optional = true }
 rten = { version = "0.24", features = ["fft"] }
 rten-tensor = { version = "0.24" }
 anyhow = "1"
-symphonia = { version = "0.6", features = ["all"] }
+symphonia = { version = "0.6", features = ["all"], optional = true }
 rubato = "3.0"
-hound = "3.5"
-clap = { version = "4", features = ["derive"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-glob = "0.3"
+hound = { version = "3.5", optional = true }
+clap = { version = "4", features = ["derive"], optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+glob = { version = "0.3", optional = true }
 
 [dev-dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 tempfile = "3"
 libc = "0.2"
 

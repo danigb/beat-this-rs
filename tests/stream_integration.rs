@@ -1,3 +1,5 @@
+#![cfg(feature = "decode")]
+
 //! The streaming API used as documented: decoded audio pushed in chunks, then `finish`.
 //!
 //! These tests guard the documented usage through the public API only; bit identity against 1.0.0
