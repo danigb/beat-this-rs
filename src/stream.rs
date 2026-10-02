@@ -18,8 +18,10 @@ use crate::{BeatAnalysis, BeatThis, Model, TimedAnalysis, TARGET_SAMPLE_RATE};
 /// **Output.** The result does not depend on how the signal is split into pushes, and it is bit for
 /// bit the result of [`BeatThis::analyze_audio`] on the whole signal (which runs through this type).
 /// Against 1.0.0 it is bit-identical for 22 050 Hz input and for 22 050 · 2^k Hz sources (11 025,
-/// 44 100, 88 200 Hz); at other rates (48 kHz etc.) the resampled samples drift slightly from 1.0.0's
-/// one-shot resampler (see the CHANGELOG for 1.1.0).
+/// 44 100, 88 200 Hz). At other rates (48 kHz etc.) the resampled samples differ from 1.0.0's
+/// one-shot resampler: slightly on short inputs, and more on long ones, where 1.0.0's resampler
+/// loses position precision and this one does not; on 60 minutes at 48 kHz a few beats move by one
+/// frame (see the CHANGELOG for 1.1.0).
 ///
 /// **Memory.** Between pushes the stream holds O(chunk) of PCM state (about 3 MB, independent of the
 /// input length) plus the mel frames computed so far, which grow by about 92 MB per hour of audio.

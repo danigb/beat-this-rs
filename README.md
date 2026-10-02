@@ -198,13 +198,26 @@ for chunk in decoded_chunks {             // mono f32, any chunk size
 let analysis = stream.finish()?;          // or finish_timed() for per-stage timing
 ```
 
-The stream holds about 3 MB of audio state plus the mel spectrogram. Measured on macOS with the
-full model, 60 minutes of 48 kHz audio peak at 620 MiB through `stream` (1.0.0's `analyze_audio`:
-5.5 GiB), and the peak grows linearly by about 94 MiB per hour of audio. All three return the same
-analysis, bit for bit, whatever the chunk sizes. Compared with 1.0.0, output is bit-identical for
-22 050 Hz input and 44.1 kHz-class sources (22 050·2^k Hz); at other rates (48 kHz etc.) the
-resampler now runs in chunks and its samples drift very slightly from 1.0.0's, with beats and
-downbeats unchanged on every input tested (see the [CHANGELOG](CHANGELOG.md), 1.1.0).
+The stream holds about 3 MB of audio state plus the mel spectrogram. Measured on macOS (Apple
+M4 Pro) with the full model, 60 minutes of 48 kHz audio peak at 620 MiB through `stream` (1.0.0's
+`analyze_audio`: about 5.5 GiB, a noisy measurement), and the peak grows linearly by about 94 MiB
+per hour of audio. The stream mutably borrows `bt` until `finish`; with the rten model it is
+`Send`. All three return the same analysis, bit for bit, whatever the chunk sizes.
+
+Compared with 1.0.0, output is bit-identical for 22 050 Hz input and 22 050·2^k Hz sources
+(11.025 / 44.1 / 88.2 kHz). At other rates (48 kHz etc.) the resampler now runs in chunks, and
+the output differs from 1.0.0's:
+
+- On short inputs by a small drift: beats and downbeats were unchanged on every input tested (a
+  23-file corpus at 48 kHz, the test MP3 upsampled to 48 kHz, and a synthetic 48 kHz signal at 20,
+  40 and 50 minutes).
+- On long inputs by more, because 1.0.0's one-shot resampler loses position precision as the input
+  grows (sharply past 46.6 minutes at 48 kHz) and 1.1.0's does not: on 60 minutes of the synthetic
+  signal, 2 of 7 200 beats and 2 of 5 886 downbeats moved by one frame (20 ms).
+
+`load_audio` to a target other than 22 050 Hz is bit-identical only where the source/target ratio
+is exact (e.g. 44.1 kHz to 88.2 kHz). These identity statements were checked on arm64; see the
+[CHANGELOG](CHANGELOG.md) (1.1.0) for the numbers and for what ran on x86_64.
 
 ## Output formats
 
