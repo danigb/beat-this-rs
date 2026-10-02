@@ -703,3 +703,283 @@ fn routed_resample_matches_v1_0_0() {
         }
     }
 }
+
+// --- ticket 04: windowed mel ----------------------------------------------------------------
+
+type RefMel = mel::MelExtractor<<runtime::rten::RtenRuntime as Runtime>::Model>;
+type NewMelModel = <beat_this::RtenRuntime as Runtime>::Model;
+
+/// The verbatim 1.0.0 whole-signal mel extractor.
+fn ref_mel() -> RefMel {
+    mel::MelExtractor::new(
+        runtime::rten::RtenRuntime
+            .load_model(Path::new(MEL_MODEL_PATH))
+            .expect("mel model (1.0.0 reference)"),
+    )
+}
+
+/// The current runtime's mel model, for the windowed paths.
+fn new_mel_model() -> NewMelModel {
+    beat_this::RtenRuntime
+        .load_model(Path::new(MEL_MODEL_PATH))
+        .expect("mel model (current)")
+}
+
+const HOP: usize = 441;
+const STRIDES: [usize; 2] = [__probe::MEL_STRIDE, 64];
+
+fn assert_mel_same(what: &str, got: &beat_this::Tensor, reference: &beat_this::Tensor) {
+    assert_eq!(got.shape, reference.shape, "{what}: mel shape");
+    assert_bits_eq(what, &got.data, &reference.data);
+}
+
+#[test]
+fn mel_frame_count_formula() {
+    if !Path::new(MEL_MODEL_PATH).exists() {
+        eprintln!("Skipping test: mel model not found");
+        return;
+    }
+    let mut reference = ref_mel();
+    let x = Synth::take(22050, 10_000);
+    let lengths = [
+        1,
+        2,
+        100,
+        440,
+        441,
+        442,
+        511,
+        512,
+        513,
+        1023,
+        1024,
+        1025,
+        HOP * 7,
+        HOP * 7 + 1,
+        HOP * 7 + 440,
+    ];
+    for n in lengths {
+        let mel = reference.extract(&x[..n]).unwrap();
+        assert_eq!(mel.shape, vec![1, 1 + n / HOP, 128], "frames for n={n}");
+    }
+    assert!(reference.extract(&[]).is_err(), "n=0 must error");
+    assert!(__probe::mel_windowed(&mut new_mel_model(), &[], 64).is_err());
+}
+
+fn lengths_under_test() -> Vec<usize> {
+    let mut lengths = vec![
+        1,
+        2,
+        100,
+        440,
+        441,
+        442,
+        511,
+        512,
+        513,
+        1023,
+        1024,
+        1025,
+        HOP * 7,
+        HOP * 7 + 1,
+        HOP * 7 + 440,
+        HOP * 64 - 1,
+        HOP * 64,
+        HOP * 64 + 1,
+        HOP * 128 - 1,
+        HOP * 128,
+        HOP * 128 + 1,
+    ];
+    // Sweeps T mod 64 over ~60-90 s inputs.
+    lengths.extend((0..30).map(|i| HOP * (3072 + 37 * i) + (97 * i) % HOP));
+    lengths
+}
+
+#[test]
+fn windowed_mel_is_identical() {
+    if !Path::new(MEL_MODEL_PATH).exists() {
+        eprintln!("Skipping test: mel model not found");
+        return;
+    }
+    let mut reference = ref_mel();
+    let mut model = new_mel_model();
+
+    // Three 10 s signals.
+    let n = 10 * 22050;
+    let mut impulse = vec![0.0f32; n];
+    impulse[n / 2] = 1.0;
+    let signals: [(&str, Vec<f32>); 3] = [
+        ("synth", Synth::take(22050, n)),
+        ("silence", vec![0.0; n]),
+        ("impulse", impulse),
+    ];
+    for (name, x) in &signals {
+        let expected = reference.extract(x).unwrap();
+        for stride in STRIDES {
+            let got = __probe::mel_windowed(&mut model, x, stride).unwrap();
+            assert_mel_same(&format!("{name} 10 s, stride {stride}"), &got, &expected);
+        }
+    }
+
+    // The synthetic signal at awkward lengths.
+    let lengths = lengths_under_test();
+    let x = Synth::take(22050, *lengths.iter().max().unwrap());
+    for n in lengths {
+        let expected = reference.extract(&x[..n]).unwrap();
+        for stride in STRIDES {
+            let got = __probe::mel_windowed(&mut model, &x[..n], stride).unwrap();
+            assert_mel_same(&format!("synth n={n}, stride {stride}"), &got, &expected);
+        }
+    }
+}
+
+fn stream_mel(model: &mut NewMelModel, x: &[f32], stride: usize, push: usize) -> beat_this::Tensor {
+    let mut stream = __probe::MelStream::new(stride);
+    for piece in x.chunks(push) {
+        stream.push(model, piece).unwrap();
+    }
+    stream.finish(model).unwrap()
+}
+
+#[test]
+fn mel_stream_push_size_invariance() {
+    if !Path::new(MEL_MODEL_PATH).exists() {
+        eprintln!("Skipping test: mel model not found");
+        return;
+    }
+    let mut reference = ref_mel();
+    let mut model = new_mel_model();
+    let x = Synth::take(22050, 100 * 22050);
+    let expected = reference.extract(&x).unwrap();
+    let windowed = __probe::mel_windowed(&mut model, &x, __probe::MEL_STRIDE).unwrap();
+    assert_mel_same("extract_windowed", &windowed, &expected);
+    for push in [7usize, 441, 8192, x.len()] {
+        let got = stream_mel(&mut model, &x, __probe::MEL_STRIDE, push);
+        assert_mel_same(&format!("stream, push {push}"), &got, &expected);
+    }
+    // A small stride exercises many window hand-overs.
+    let got = stream_mel(&mut model, &x, 64, 8192);
+    assert_mel_same("stream, stride 64", &got, &expected);
+    // One sample at a time, on a shorter signal.
+    let short = &x[..10 * 22050];
+    let expected = reference.extract(short).unwrap();
+    let got = stream_mel(&mut model, short, __probe::MEL_STRIDE, 1);
+    assert_mel_same("stream, push 1", &got, &expected);
+}
+
+#[test]
+fn mel_stream_edge_cases() {
+    if !Path::new(MEL_MODEL_PATH).exists() {
+        eprintln!("Skipping test: mel model not found");
+        return;
+    }
+    let mut reference = ref_mel();
+    let mut model = new_mel_model();
+    let x = Synth::take(22050, 4000);
+    for n in [1usize, 2, 440, 441, 442, 511, 512, 513, 1023, 1025, 3000] {
+        let expected = reference.extract(&x[..n]).unwrap();
+        let got = stream_mel(&mut model, &x[..n], 64, 100);
+        assert_mel_same(&format!("stream n={n}"), &got, &expected);
+    }
+    let stream = __probe::MelStream::new(__probe::MEL_STRIDE);
+    assert!(
+        stream.finish(&mut model).is_err(),
+        "empty stream must error"
+    );
+}
+
+/// Degradations: the windowed comparison must see the overlap region and a one-sample shift.
+#[test]
+fn windowed_mel_degradations() {
+    if !Path::new(MEL_MODEL_PATH).exists() {
+        eprintln!("Skipping test: mel model not found");
+        return;
+    }
+    let mut reference = ref_mel();
+    let mut model = new_mel_model();
+    let stride = __probe::MEL_STRIDE;
+    let n = 100 * 22050;
+    let x = Synth::take(22050, n);
+    let expected = reference.extract(&x).unwrap();
+
+    // (b) One ULP on a sample inside the first overlap (the first sample of window 1). The control
+    // (same perturbed signal through the reference) must still match, so the difference seen is
+    // the perturbation, carried through the windowed path.
+    let at = HOP * (stride - 64);
+    let mut bumped = x.clone();
+    bumped[at] = f32::from_bits(bumped[at].to_bits() + 1);
+    let windowed = __probe::mel_windowed(&mut model, &bumped, stride).unwrap();
+    let control = reference.extract(&bumped).unwrap();
+    assert_mel_same("perturbed control", &windowed, &control);
+    let d = bit_diff(&windowed.data, &expected.data);
+    assert!(
+        d.differing > 0,
+        "overlap perturbation went unnoticed: {d:?}"
+    );
+
+    // (c) Shifted by one sample against an unshifted reference of the same length.
+    let shifted = __probe::mel_windowed(&mut model, &x[1..], stride).unwrap();
+    let truncated = reference.extract(&x[..n - 1]).unwrap();
+    let d = bit_diff(&shifted.data, &truncated.data);
+    assert!(d.differing > 0, "a one-sample shift went unnoticed: {d:?}");
+}
+
+#[test]
+#[ignore = "long: run with --release -- --ignored"]
+fn windowed_mel_long() {
+    if !Path::new(MEL_MODEL_PATH).exists() {
+        eprintln!("Skipping test: mel model not found");
+        return;
+    }
+    let mut reference = ref_mel();
+    let mut model = new_mel_model();
+    let x = Synth::take(22050, 20 * 60 * 22050);
+    let expected = reference.extract(&x).unwrap();
+    for stride in STRIDES {
+        let got = __probe::mel_windowed(&mut model, &x, stride).unwrap();
+        assert_mel_same(&format!("20 min, stride {stride}"), &got, &expected);
+        eprintln!("20 min, stride {stride}: identical");
+    }
+}
+
+/// Documents why the windows are 64-aligned: the ticket's naive scheme (a 2-frame halo, any width)
+/// shows sporadic 1-ULP differences from rten's fused-GEMM partial tiles. Prints, asserts nothing:
+/// the outcome depends on the CPU's kernels.
+#[test]
+#[ignore = "diagnostic: prints, asserts nothing"]
+fn windowed_mel_naive_halo_diagnostic() {
+    if !Path::new(MEL_MODEL_PATH).exists() {
+        eprintln!("Skipping test: mel model not found");
+        return;
+    }
+    let mut reference = ref_mel();
+    let mut model = new_mel_model();
+    let x = Synth::take(22050, 30 * 22050);
+    let expected = reference.extract(&x).unwrap();
+    let total = expected.shape[1];
+    for width in [8usize, 500, 1000, 1500] {
+        let mut data = Vec::new();
+        let mut s = 0;
+        while s < total {
+            let lo = s.saturating_sub(2);
+            let hi = (s + width + 2).min(total);
+            let end = if hi == total { x.len() } else { HOP * (hi - 1) };
+            let input = beat_this::Tensor {
+                shape: vec![1, end - HOP * lo],
+                data: x[HOP * lo..end].to_vec(),
+            };
+            let out = beat_this::Model::run(&mut model, &[("audio_pcm", &input)]).unwrap();
+            let local = &out["mel_spectrogram"];
+            let own = (s - lo)..(s - lo + width.min(total - s));
+            data.extend_from_slice(&local.data[own.start * 128..own.end * 128]);
+            s += width;
+        }
+        let d = bit_diff(&data, &expected.data);
+        eprintln!(
+            "naive halo 2, width {width}: {} of {} values differ (max_ulp {})",
+            d.differing,
+            expected.data.len(),
+            d.max_ulp
+        );
+    }
+}

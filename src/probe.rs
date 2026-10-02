@@ -9,6 +9,7 @@ use anyhow::Result;
 use crate::{BeatThis, Model, Tensor};
 
 pub use crate::audio::StreamResampler;
+pub use crate::mel::MelStream;
 
 /// Deterministic test signal: a 220 Hz sine, an LCG noise bed at -20 dB and an 80 Hz decaying
 /// pulse every 0.5 s. Yields the same samples whether pulled in one call or in chunks of any size.
@@ -88,4 +89,12 @@ pub fn chunking_is_exact(source_sr: u32) -> bool {
 /// Output length of the one-shot resample call for `n` input frames.
 pub fn one_shot_len(n: usize, source_sr: u32) -> usize {
     crate::audio::one_shot_len(n, crate::TARGET_SAMPLE_RATE as f64 / source_sr as f64)
+}
+
+/// Frames owned per mel window in the pipeline.
+pub const MEL_STRIDE: usize = crate::mel::MEL_STRIDE;
+
+/// Windowed mel extraction on a bare mel model with the given stride (a positive multiple of 64).
+pub fn mel_windowed<M: Model>(model: &mut M, samples: &[f32], stride: usize) -> Result<Tensor> {
+    crate::mel::extract_windowed(model, samples, stride)
 }
