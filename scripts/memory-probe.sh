@@ -6,6 +6,9 @@
 #                           [--stages "models resample mel-input mel full"]
 #                           [--runs 3] [--rate 48000] [--model PATH]
 #
+# Stages (see examples/memory_probe.rs): models resample resample-stream mel-input mel full
+# full-owned stream.
+#
 # Columns: the probe's own ru_maxrss, `time`'s maximum resident set size, and (macOS only) the
 # `peak memory footprint` from `/usr/bin/time -l`. On Linux `/usr/bin/time -v` is used and the
 # footprint column is n/a. Cells run one at a time: parallel runs distort timing and RAM.

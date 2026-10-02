@@ -17,6 +17,11 @@
 //! - `mel`: ... then run the mel graph.
 //! - `full`: synthesise native-rate mono, then `analyze_audio` (the caller keeps its buffer).
 //! - `full-owned`: as `full`, through `analyze_owned`; the caller does not keep the buffer.
+//! - `stream`: push the synthetic signal in 8192-frame pieces into `BeatThis::stream`, then
+//!   `finish`; the native-rate input never exists whole. This is the streaming API's peak.
+//!
+//! Since ticket 05, `analyze_*` run through `BeatStream`; `resample`, `mel-input` and `mel` measure
+//! the whole-buffer building blocks (whole `resample`, then the windowed mel over the whole buffer).
 //!
 //! The caller's native-rate mono buffer stays alive through every stage except `full-owned`, as it
 //! does for a caller of the borrowed `analyze_audio`. `mel-input` and `mel` take the resampled
@@ -144,7 +149,22 @@ fn main() -> Result<()> {
             let mono = Synth::take(args.rate, n);
             black_box(bt.analyze_owned(mono, args.rate)?);
         }
-        other => bail!("unknown stage '{other}' (models|resample|resample-stream|mel-input|mel|full|full-owned)"),
+        "stream" => {
+            // The synthetic input is generated in 8192-frame pieces and pushed into the stream;
+            // the whole input never exists.
+            let mut synth = Synth::new(args.rate);
+            let mut stream = bt.stream(args.rate)?;
+            let mut piece = vec![0.0f32; 8192];
+            let mut left = n;
+            while left > 0 {
+                let take = left.min(piece.len());
+                synth.fill(&mut piece[..take]);
+                stream.push(&piece[..take])?;
+                left -= take;
+            }
+            black_box(stream.finish()?);
+        }
+        other => bail!("unknown stage '{other}' (models|resample|resample-stream|mel-input|mel|full|full-owned|stream)"),
     }
 
     println!(
