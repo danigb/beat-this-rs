@@ -42,26 +42,32 @@ mod v1;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
 
-use beat_this::__probe::Synth;
+use beat_this::__probe::{self, StreamResampler, Synth};
 use beat_this::BeatAnalysis;
-use common::bits::{assert_bits_eq, bit_diff};
+use common::bits::{assert_bits_eq, bit_diff, BitDiff};
 
 const MEL_MODEL_PATH: &str = "models/mel_spectrogram.onnx";
 const BEAT_MODEL_PATH: &str = "models/beat_this_small.onnx";
+
+/// The beat model: `BEAT_THIS_MODEL` if set (e.g. `models/beat_this.onnx` for the long and drift
+/// checks), else the committed small model.
+fn beat_model_path() -> String {
+    std::env::var("BEAT_THIS_MODEL").unwrap_or_else(|_| BEAT_MODEL_PATH.to_string())
+}
 const TEST_AUDIO_PATH: &str = "test_files/It Don't Mean A Thing - Kings of Swing.mp3";
 
 type NewBt = beat_this::BeatThis<<beat_this::RtenRuntime as Runtime>::Model>;
 type OldBt = v1::V1BeatThis<<runtime::rten::RtenRuntime as Runtime>::Model>;
 
 fn models_present() -> bool {
-    Path::new(MEL_MODEL_PATH).exists() && Path::new(BEAT_MODEL_PATH).exists()
+    Path::new(MEL_MODEL_PATH).exists() && Path::new(&beat_model_path()).exists()
 }
 
 fn new_bt() -> NewBt {
     beat_this::BeatThis::new(
         &beat_this::RtenRuntime,
         Path::new(MEL_MODEL_PATH),
-        Path::new(BEAT_MODEL_PATH),
+        Path::new(&beat_model_path()),
     )
     .expect("failed to load models (current pipeline)")
 }
@@ -70,7 +76,7 @@ fn v1_bt() -> OldBt {
     v1::V1BeatThis::new(
         &runtime::rten::RtenRuntime,
         Path::new(MEL_MODEL_PATH),
-        Path::new(BEAT_MODEL_PATH),
+        Path::new(&beat_model_path()),
     )
     .expect("failed to load models (1.0.0 reference)")
 }
@@ -359,4 +365,318 @@ fn long_inputs_match_v1_0_0() {
             eprintln!("{minutes} min @ {rate}: identical");
         }
     }
+}
+
+// --- ticket 03: the chunked resampler ---------------------------------------------------------
+
+/// The 1.0.0 one-shot resampler, verbatim, to 22 050 Hz.
+fn reference_resample(x: &[f32], sr: u32) -> Vec<f32> {
+    audio::resample(x.to_vec(), sr, 22050).expect("1.0.0 resample")
+}
+
+/// The chunked resampler, fed `push_size` samples at a time.
+fn stream_resample(x: &[f32], sr: u32, push_size: usize) -> Vec<f32> {
+    let mut r = StreamResampler::new(sr, 22050).unwrap();
+    let mut out = Vec::new();
+    for piece in x.chunks(push_size) {
+        r.push(piece, &mut out).unwrap();
+    }
+    r.finish(&mut out).unwrap();
+    out
+}
+
+fn ten_seconds(rate: u32) -> Vec<f32> {
+    Synth::take(rate, 10 * rate as usize)
+}
+
+#[test]
+fn chunking_predicate() {
+    for sr in [11025, 44100, 88200, 176400] {
+        assert!(__probe::chunking_is_exact(sr), "{sr} should be exact");
+    }
+    for sr in [8000, 16000, 32000, 48000, 96000] {
+        assert!(!__probe::chunking_is_exact(sr), "{sr} should not be exact");
+    }
+}
+
+#[test]
+fn resampler_is_identical_for_exact_ratios() {
+    for sr in [11025u32, 44100, 88200] {
+        let x = ten_seconds(sr);
+        let reference = reference_resample(&x, sr);
+        assert_eq!(reference.len(), __probe::one_shot_len(x.len(), sr));
+        for push in [1usize, 7, 4096, 8192, 8193, x.len()] {
+            let got = stream_resample(&x, sr, push);
+            assert_bits_eq(&format!("resample @ {sr}, push {push}"), &got, &reference);
+        }
+    }
+}
+
+#[test]
+fn output_length_matches_one_shot_for_many_input_lengths() {
+    for sr in [44100u32, 48000] {
+        let big = Synth::take(sr, 30_000);
+        for n in (260..1200)
+            .step_by(37)
+            .chain([8191, 8192, 8193, 16384, 16385, 24576, 30_000])
+        {
+            let x = &big[..n];
+            let Ok(reference) = audio::resample(x.to_vec(), sr, 22050) else {
+                continue;
+            };
+            let got = stream_resample(x, sr, 1000);
+            assert_eq!(got.len(), reference.len(), "length @ {sr}, n={n}");
+        }
+    }
+}
+
+#[test]
+fn resampler_drift_report_48000() {
+    let sr = 48000u32;
+    let x = ten_seconds(sr);
+    let reference = reference_resample(&x, sr);
+    let first = stream_resample(&x, sr, 8192);
+    assert_eq!(first.len(), reference.len(), "length");
+    let head = __probe::one_shot_len(8192, sr);
+    assert_bits_eq("first chunk", &first[..head], &reference[..head]);
+    for push in [7usize, x.len()] {
+        let other = stream_resample(&x, sr, push);
+        assert_bits_eq(&format!("push {push} vs push 8192"), &other, &first);
+    }
+    let d = bit_diff(&first, &reference);
+    eprintln!("48 kHz, 10 s drift vs 1.0.0: {d:?}");
+    assert!(d.max_abs <= 1e-6, "drift grew: {d:?}");
+}
+
+#[test]
+fn push_size_invariance_all_rates() {
+    for sr in [44100u32, 48000] {
+        let x = ten_seconds(sr);
+        let whole = stream_resample(&x, sr, 8192);
+        for push in [1usize, 7, x.len()] {
+            let got = stream_resample(&x, sr, push);
+            assert_bits_eq(&format!("push {push} @ {sr}"), &got, &whole);
+        }
+    }
+}
+
+/// Degradations: the exact-ratio comparison must notice a one-ULP input change in the first chunk
+/// and a dropped sample at a chunk boundary.
+#[test]
+fn resampler_comparison_degradations() {
+    let sr = 44100u32;
+    let x = ten_seconds(sr);
+    let reference = reference_resample(&x, sr);
+
+    let mut bumped = x.clone();
+    bumped[8191] = f32::from_bits(bumped[8191].to_bits() + 1);
+    let d = bit_diff(&stream_resample(&bumped, sr, 8192), &reference);
+    assert!(
+        d.differing > 0,
+        "a 1-ULP input change went unnoticed: {d:?}"
+    );
+
+    let mut dropped = x.clone();
+    dropped.remove(8192);
+    let got = stream_resample(&dropped, sr, 8192);
+    let d = bit_diff(&got, &reference);
+    assert!(
+        d.len_a != d.len_b || d.differing > 0,
+        "a dropped sample went unnoticed: {d:?}"
+    );
+}
+
+#[test]
+fn resampler_rejects_empty_input() {
+    let mut r = StreamResampler::new(48000, 22050).unwrap();
+    let mut out = Vec::new();
+    r.push(&[], &mut out).unwrap();
+    assert!(r.finish(&mut out).is_err());
+    assert!(audio::resample(Vec::new(), 48000, 22050).is_err());
+}
+
+fn print_drift_header() {
+    eprintln!("| rate | min | differing | max_abs | max_ulp | len |");
+    eprintln!("|---|---|---|---|---|---|");
+}
+
+fn drift_row(sr: u32, minutes: usize) -> BitDiff {
+    let x = Synth::take(sr, minutes * 60 * sr as usize);
+    let reference = reference_resample(&x, sr);
+    let got = stream_resample(&x, sr, 8192);
+    let d = bit_diff(&got, &reference);
+    eprintln!(
+        "| {sr} | {minutes} | {} | {:e} | {} | {} |",
+        d.differing, d.max_abs, d.max_ulp, d.len_a
+    );
+    d
+}
+
+#[test]
+#[ignore = "long: run with --release -- --ignored"]
+fn resampler_drift_long() {
+    print_drift_header();
+    for minutes in [5usize, 20] {
+        for sr in [44100u32, 88200] {
+            let d = drift_row(sr, minutes);
+            assert!(d.is_identical(), "{sr} must be identical: {d:?}");
+        }
+        for sr in [48000u32, 32000, 16000, 96000] {
+            let d = drift_row(sr, minutes);
+            assert_eq!(d.len_a, d.len_b, "length @ {sr}");
+        }
+    }
+}
+
+// --- downstream effect of the 48 kHz-class resampler drift --------------------------------------
+
+struct DriftReport {
+    resampled: BitDiff,
+    mel: BitDiff,
+    beat_logits: BitDiff,
+    downbeat_logits: BitDiff,
+    min_abs_logit: f32,
+    beats: usize,
+    downbeats: usize,
+}
+
+/// Analyse `x` (48 kHz-class input) through 1.0.0 (one-shot resample) and through the chunked
+/// resampler, and assert that beats and downbeats are bit-identical.
+fn compare_downstream(
+    what: &str,
+    x: &[f32],
+    sr: u32,
+    new: &mut NewBt,
+    v1: &mut OldBt,
+) -> DriftReport {
+    let reference = reference_resample(x, sr);
+    let streamed = stream_resample(x, sr, 8192);
+    let resampled = bit_diff(&streamed, &reference);
+    let old = v1.analyze_audio(&reference, 22050).unwrap();
+    let current = new.analyze_audio(&streamed, 22050).unwrap();
+    let min_abs_logit = old
+        .beat_logits
+        .iter()
+        .chain(&old.downbeat_logits)
+        .chain(&current.beat_logits)
+        .chain(&current.downbeat_logits)
+        .map(|v| v.abs())
+        .fold(f32::INFINITY, f32::min);
+    let report = DriftReport {
+        resampled,
+        mel: bit_diff(&current.mel.data, &old.mel.data),
+        beat_logits: bit_diff(&current.beat_logits, &old.beat_logits),
+        downbeat_logits: bit_diff(&current.downbeat_logits, &old.downbeat_logits),
+        min_abs_logit,
+        beats: old.beats.len(),
+        downbeats: old.downbeats.len(),
+    };
+    assert_bits_eq(&format!("{what}: beats"), &current.beats, &old.beats);
+    assert_bits_eq(
+        &format!("{what}: downbeats"),
+        &current.downbeats,
+        &old.downbeats,
+    );
+    report
+}
+
+fn print_report(what: &str, r: &DriftReport) {
+    eprintln!(
+        "{what}: pcm differing {} (max_abs {:e}); mel differing {} (max_abs {:e}); beat logits max_abs {:e}; downbeat logits max_abs {:e}; min |logit| {:e}; {} beats, {} downbeats (identical)",
+        r.resampled.differing,
+        r.resampled.max_abs,
+        r.mel.differing,
+        r.mel.max_abs,
+        r.beat_logits.max_abs,
+        r.downbeat_logits.max_abs,
+        r.min_abs_logit,
+        r.beats,
+        r.downbeats
+    );
+}
+
+#[test]
+#[ignore = "long: run with --release -- --ignored; BEAT_THIS_MODEL selects the beat model"]
+fn resampler_drift_beats() {
+    require_models!();
+    let mut new = new_bt();
+    let mut v1 = v1_bt();
+    eprintln!("beat model: {}", beat_model_path());
+    if Path::new(TEST_AUDIO_PATH).exists() {
+        let audio = beat_this::load_audio(Path::new(TEST_AUDIO_PATH), 48000).unwrap();
+        assert_eq!(audio.sample_rate, 48000);
+        let r = compare_downstream(
+            "mp3 upsampled to 48 kHz",
+            &audio.samples,
+            48000,
+            &mut new,
+            &mut v1,
+        );
+        print_report("mp3 upsampled to 48 kHz", &r);
+    }
+    let x = Synth::take(48000, 20 * 60 * 48000);
+    let r = compare_downstream("20 min synth @ 48 kHz", &x, 48000, &mut new, &mut v1);
+    print_report("20 min synth @ 48 kHz", &r);
+}
+
+/// Every audio file of the corpus, as 48 kHz input. `BEAT_THIS_DRIFT_CORPUS` is a directory
+/// (searched recursively) or a text file listing one path per line.
+#[test]
+#[ignore = "long: set BEAT_THIS_DRIFT_CORPUS; run with --release -- --ignored"]
+fn resampler_drift_corpus() {
+    let Ok(root) = std::env::var("BEAT_THIS_DRIFT_CORPUS") else {
+        eprintln!("Skipping: BEAT_THIS_DRIFT_CORPUS is not set");
+        return;
+    };
+    require_models!();
+    let files = corpus_files(Path::new(&root));
+    assert!(!files.is_empty(), "no files found under {root}");
+    let mut new = new_bt();
+    let mut v1 = v1_bt();
+    eprintln!("beat model: {}", beat_model_path());
+    let mut compared = 0;
+    for path in &files {
+        let audio = match beat_this::load_audio(path, 48000) {
+            Ok(a) => a,
+            Err(e) => {
+                eprintln!("skip {}: {e}", path.display());
+                continue;
+            }
+        };
+        assert_eq!(audio.sample_rate, 48000);
+        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        let r = compare_downstream(&name, &audio.samples, 48000, &mut new, &mut v1);
+        print_report(&name, &r);
+        compared += 1;
+    }
+    eprintln!("corpus: {compared} of {} files compared", files.len());
+}
+
+fn corpus_files(root: &Path) -> Vec<std::path::PathBuf> {
+    if root.is_file() {
+        let list = std::fs::read_to_string(root).unwrap();
+        return list
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .map(std::path::PathBuf::from)
+            .collect();
+    }
+    let mut files = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if matches!(
+                path.extension().and_then(|e| e.to_str()),
+                Some("mp3" | "wav" | "flac" | "ogg" | "m4a")
+            ) {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+    files
 }

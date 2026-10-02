@@ -8,6 +8,8 @@ use anyhow::Result;
 
 use crate::{BeatThis, Model, Tensor};
 
+pub use crate::audio::StreamResampler;
+
 /// Deterministic test signal: a 220 Hz sine, an LCG noise bed at -20 dB and an 80 Hz decaying
 /// pulse every 0.5 s. Yields the same samples whether pulled in one call or in chunks of any size.
 pub struct Synth {
@@ -75,4 +77,15 @@ pub fn mel_input(samples: Vec<f32>) -> Result<usize> {
 /// The mel stage exactly as the pipeline runs it.
 pub fn mel<M: Model>(bt: &mut BeatThis<M>, samples: Vec<f32>) -> Result<Tensor> {
     bt.mel.extract_owned(samples)
+}
+
+/// True when the chunked resampler is bit-identical to the one-shot call for this source rate
+/// (to the pipeline's 22050 Hz target).
+pub fn chunking_is_exact(source_sr: u32) -> bool {
+    crate::audio::chunking_is_exact(source_sr, crate::TARGET_SAMPLE_RATE)
+}
+
+/// Output length of the one-shot resample call for `n` input frames.
+pub fn one_shot_len(n: usize, source_sr: u32) -> usize {
+    crate::audio::one_shot_len(n, crate::TARGET_SAMPLE_RATE as f64 / source_sr as f64)
 }

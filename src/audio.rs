@@ -1,7 +1,7 @@
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 use rubato::audioadapter_buffers::direct::InterleavedSlice;
 use rubato::{
-    Async, FixedAsync, Resampler, SincInterpolationParameters, SincInterpolationType,
+    Async, FixedAsync, Indexing, Resampler, SincInterpolationParameters, SincInterpolationType,
     WindowFunction,
 };
 use std::fs::File;
@@ -112,6 +112,157 @@ fn to_mono(samples: &[f32], channels: usize) -> Vec<f32> {
         .collect()
 }
 
+/// The sinc resampler parameters, shared by [`resample`] and [`StreamResampler`] so that they
+/// cannot diverge.
+fn sinc_params() -> SincInterpolationParameters {
+    SincInterpolationParameters {
+        sinc_len: 256,
+        f_cutoff: 0.95,
+        interpolation: SincInterpolationType::Linear,
+        oversampling_factor: 256,
+        window: WindowFunction::BlackmanHarris2,
+    }
+}
+
+/// Input chunk fed to rubato by [`StreamResampler`]. Keeps rubato's buffers to ~70 KB.
+const RESAMPLE_CHUNK: usize = 8192;
+
+/// Output length of the one-shot [`resample`] call for `n` input frames: rubato 3.0.0
+/// `Async::calculate_output_size` (asynchro.rs:384-386) with `chunk_size = n`,
+/// `interpolator_len = 256` and `last_index = -(256 - 1)`. Negative values saturate to 0, as there.
+pub(crate) fn one_shot_len(n: usize, ratio: f64) -> usize {
+    ((n as f64 - (256 + 1) as f64 - (-(256.0 - 1.0))) * (0.5 * ratio + 0.5 * ratio)).floor()
+        as usize
+}
+
+/// True when chunked processing is provably bit-identical to the one-shot call: rubato's
+/// per-output step `t = 1/ratio` (computed exactly as rubato does) is a dyadic rational with at
+/// most 20 fractional bits, so every read position `-255 + k*t` is exact in f64 and no addition
+/// rounds, whatever the chunking. True for sources 22050 * 2^k (11025, 44100, 88200, 176400).
+pub(crate) fn chunking_is_exact(source_sr: u32, target_sr: u32) -> bool {
+    let ratio = target_sr as f64 / source_sr as f64;
+    let t = 1.0 / ratio;
+    (t * 1_048_576.0).fract() == 0.0 && t < 1024.0
+}
+
+/// Push-based sinc resampler with the one-shot [`resample`]'s parameters, leading delay and
+/// output length.
+///
+/// Feeds rubato fixed chunks of [`RESAMPLE_CHUNK`] frames, so memory is O(chunk) instead of
+/// O(signal). Output is bit-identical to the one-shot call when [`chunking_is_exact`], and drifts
+/// slightly otherwise (rubato advances its read position as an `f64` and renormalises it per chunk).
+/// The output does not depend on how the input is split across `push` calls.
+pub struct StreamResampler {
+    inner: Async<f32>,
+    ratio: f64,
+    /// Fewer than `RESAMPLE_CHUNK` native samples waiting for a full chunk.
+    pending: Vec<f32>,
+    /// Computed, not yet released.
+    produced: Vec<f32>,
+    out_buf: Vec<f32>,
+    total_in: usize,
+    released: usize,
+}
+
+impl StreamResampler {
+    pub fn new(source_sr: u32, target_sr: u32) -> Result<Self> {
+        let ratio = target_sr as f64 / source_sr as f64;
+        let inner = Async::<f32>::new_sinc(
+            ratio,
+            2.0,
+            &sinc_params(),
+            RESAMPLE_CHUNK,
+            1, // mono
+            FixedAsync::Input,
+        )?;
+        let out_buf = vec![0.0; inner.output_frames_max()];
+        Ok(Self {
+            inner,
+            ratio,
+            pending: Vec::with_capacity(RESAMPLE_CHUNK),
+            produced: Vec::new(),
+            out_buf,
+            total_in: 0,
+            released: 0,
+        })
+    }
+
+    /// Run one rubato call on `chunk` (exactly `RESAMPLE_CHUNK` frames, of which the first
+    /// `partial` are valid when given) and append its output to `produced`.
+    fn run(&mut self, chunk: &[f32], partial: Option<usize>) -> Result<()> {
+        let input = InterleavedSlice::new(chunk, 1, RESAMPLE_CHUNK)
+            .map_err(|e| anyhow!("resampler input adapter: {e:?}"))?;
+        let frames_out = self.inner.output_frames_next();
+        let mut output = InterleavedSlice::new_mut(&mut self.out_buf, 1, frames_out)
+            .map_err(|e| anyhow!("resampler output adapter: {e:?}"))?;
+        let indexing = partial.map(|n| Indexing {
+            input_offset: 0,
+            output_offset: 0,
+            partial_len: Some(n),
+            active_channels_mask: None,
+        });
+        let (_, written) =
+            self.inner
+                .process_into_buffer(&input, &mut output, indexing.as_ref())?;
+        self.produced.extend_from_slice(&self.out_buf[..written]);
+        Ok(())
+    }
+
+    /// Move what is releasable from `produced` to `out`: never more than the one-shot length for
+    /// the input seen so far, which the final length can only exceed.
+    fn release(&mut self, out: &mut Vec<f32>) {
+        let cap = one_shot_len(self.total_in, self.ratio);
+        let k = cap.saturating_sub(self.released).min(self.produced.len());
+        out.extend(self.produced.drain(..k));
+        self.released += k;
+    }
+
+    /// Feed native-rate mono; append releasable output to `out`.
+    pub fn push(&mut self, input: &[f32], out: &mut Vec<f32>) -> Result<()> {
+        self.total_in += input.len();
+        let mut rest = input;
+        while !rest.is_empty() {
+            if self.pending.is_empty() && rest.len() >= RESAMPLE_CHUNK {
+                // Whole chunk available: process straight from the caller's slice.
+                let (chunk, tail) = rest.split_at(RESAMPLE_CHUNK);
+                self.run(chunk, None)?;
+                rest = tail;
+            } else {
+                let take = (RESAMPLE_CHUNK - self.pending.len()).min(rest.len());
+                self.pending.extend_from_slice(&rest[..take]);
+                rest = &rest[take..];
+                if self.pending.len() == RESAMPLE_CHUNK {
+                    let chunk = std::mem::take(&mut self.pending);
+                    self.run(&chunk, None)?;
+                    self.pending = chunk;
+                    self.pending.clear();
+                }
+            }
+        }
+        self.release(out);
+        Ok(())
+    }
+
+    /// Flush and append the rest. Total appended over the stream equals the one-shot length.
+    pub fn finish(mut self, out: &mut Vec<f32>) -> Result<()> {
+        if self.total_in == 0 {
+            bail!("cannot resample empty input");
+        }
+        let target = one_shot_len(self.total_in, self.ratio);
+        let valid = self.pending.len();
+        let mut chunk = std::mem::take(&mut self.pending);
+        chunk.resize(RESAMPLE_CHUNK, 0.0);
+        self.run(&chunk, Some(valid))?;
+        chunk.fill(0.0);
+        while self.released + self.produced.len() < target {
+            self.run(&chunk, Some(0))?;
+        }
+        let k = target - self.released;
+        out.extend(self.produced.drain(..k));
+        Ok(())
+    }
+}
+
 /// Resample mono audio from `source_sr` to `target_sr` using sinc interpolation.
 /// Returns samples unchanged if rates already match.
 pub fn resample(samples: Vec<f32>, source_sr: u32, target_sr: u32) -> Result<Vec<f32>> {
@@ -119,13 +270,7 @@ pub fn resample(samples: Vec<f32>, source_sr: u32, target_sr: u32) -> Result<Vec
         return Ok(samples);
     }
 
-    let params = SincInterpolationParameters {
-        sinc_len: 256,
-        f_cutoff: 0.95,
-        interpolation: SincInterpolationType::Linear,
-        oversampling_factor: 256,
-        window: WindowFunction::BlackmanHarris2,
-    };
+    let params = sinc_params();
 
     // rubato 3.0: `SincFixedIn` became `Async` with `FixedAsync::Input`. We
     // process the whole buffer in a single call (chunk_size = input length),
