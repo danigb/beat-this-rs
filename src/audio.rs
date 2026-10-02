@@ -1,4 +1,4 @@
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, bail, ensure, Result};
 use rubato::audioadapter_buffers::direct::InterleavedSlice;
 use rubato::{
     Async, FixedAsync, Indexing, Resampler, SincInterpolationParameters, SincInterpolationType,
@@ -135,11 +135,27 @@ pub(crate) fn one_shot_len(n: usize, ratio: f64) -> usize {
         as usize
 }
 
+/// A sample rate of 0 makes the resampling ratio infinite or zero. rubato would then try to size
+/// its buffers from it and panic (1.0.0 panicked for 3 or more input samples), so it is an error.
+fn check_rates(source_sr: u32, target_sr: u32) -> Result<()> {
+    ensure!(
+        source_sr > 0 && target_sr > 0,
+        "invalid sample rate: cannot resample from {source_sr} Hz to {target_sr} Hz"
+    );
+    Ok(())
+}
+
 /// True when chunked processing is provably bit-identical to the one-shot call: rubato's
 /// per-output step `t = 1/ratio` (computed exactly as rubato does) is a dyadic rational with at
 /// most 20 fractional bits, so every read position `-255 + k*t` is exact in f64 and no addition
-/// rounds, whatever the chunking. True for sources 22050 * 2^k (11025, 44100, 88200, 176400).
+/// rounds, whatever the chunking, as long as positions stay below 2^33 in magnitude (53 mantissa
+/// bits minus 20 fractional ones): the one-shot call reads up to the input length, so this holds
+/// for inputs under 2^33 frames (13.5 hours at 176.4 kHz). True for sources 22050 * 2^k (11025,
+/// 44100, 88200, 176400).
 pub(crate) fn chunking_is_exact(source_sr: u32, target_sr: u32) -> bool {
+    if source_sr == 0 || target_sr == 0 {
+        return false;
+    }
     let ratio = target_sr as f64 / source_sr as f64;
     let t = 1.0 / ratio;
     (t * 1_048_576.0).fract() == 0.0 && t < 1024.0
@@ -165,7 +181,9 @@ pub struct StreamResampler {
 }
 
 impl StreamResampler {
+    /// Errors when either rate is 0.
     pub fn new(source_sr: u32, target_sr: u32) -> Result<Self> {
+        check_rates(source_sr, target_sr)?;
         let ratio = target_sr as f64 / source_sr as f64;
         let inner = Async::<f32>::new_sinc(
             ratio,
@@ -260,8 +278,22 @@ impl StreamResampler {
         chunk.resize(RESAMPLE_CHUNK, 0.0);
         self.run(&chunk, Some(valid))?;
         chunk.fill(0.0);
+        // Each zero chunk yields about `RESAMPLE_CHUNK * ratio` frames, so the missing frames need
+        // about `missing / (RESAMPLE_CHUNK * ratio)` chunks. Allow that plus slack, and fail rather
+        // than loop forever if rubato stops producing output.
+        let missing = target.saturating_sub(self.released + self.produced.len());
+        let max_runs = 4 + (missing as f64 / (RESAMPLE_CHUNK as f64 * self.ratio)).ceil() as usize;
+        let mut runs = 0;
         while self.released + self.produced.len() < target {
+            ensure!(
+                runs < max_runs,
+                "resampler flush produced {} of {} frames after {} chunks",
+                self.released + self.produced.len(),
+                target,
+                runs
+            );
             self.run(&chunk, Some(0))?;
+            runs += 1;
         }
         let k = target - self.released;
         out.extend(self.produced.drain(..k));
@@ -270,7 +302,7 @@ impl StreamResampler {
 }
 
 /// Resample mono audio from `source_sr` to `target_sr` using sinc interpolation.
-/// Returns samples unchanged if rates already match.
+/// Returns samples unchanged if rates already match, and an error if either rate is 0.
 ///
 /// Where chunked processing is provably bit-identical to the one-shot call
 /// ([`chunking_is_exact`]: sources of 22050 * 2^k Hz, such as 44.1 kHz) the signal is resampled in
@@ -281,6 +313,7 @@ pub fn resample(samples: Vec<f32>, source_sr: u32, target_sr: u32) -> Result<Vec
     if source_sr == target_sr {
         return Ok(samples);
     }
+    check_rates(source_sr, target_sr)?;
     if chunking_is_exact(source_sr, target_sr) {
         let mut resampler = StreamResampler::new(source_sr, target_sr)?;
         let mut out = Vec::with_capacity(one_shot_len(samples.len(), resampler.ratio));

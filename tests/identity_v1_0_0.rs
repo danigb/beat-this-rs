@@ -494,6 +494,47 @@ fn resampler_rejects_empty_input() {
     assert!(audio::resample(Vec::new(), 48000, 22050).is_err());
 }
 
+/// A sample rate of 0 is an error at every length, never a panic. 1.0.0 returned an error for
+/// up to 2 samples (an empty resample, then an empty mel) and panicked inside rubato from 3 samples
+/// on; the error behaviour must match where 1.0.0 had one.
+#[test]
+fn rate_zero_is_an_error() {
+    assert!(StreamResampler::new(0, 22050).is_err());
+    assert!(StreamResampler::new(22050, 0).is_err());
+    assert!(!__probe::chunking_is_exact(0));
+    for n in 0..=5usize {
+        let x = Synth::take(22050, n);
+        assert!(__probe::resample(x, 0).is_err(), "resample n={n} @ 0 Hz");
+    }
+    require_models!();
+    let mut new = new_bt();
+    let mut v1 = v1_bt();
+    for n in 0..=5usize {
+        let x = Synth::take(22050, n);
+        let current = new.analyze_audio(&x, 0);
+        assert!(
+            current.is_err(),
+            "analyze_audio n={n} @ 0 Hz must be an error"
+        );
+        let old = catch_unwind(AssertUnwindSafe(|| v1.analyze_audio(&x, 0).is_err()));
+        if n <= 2 {
+            assert_eq!(old.ok(), Some(true), "1.0.0 errors for n={n} @ 0 Hz");
+        } else {
+            assert!(old.is_err(), "1.0.0 panics for n={n} @ 0 Hz");
+        }
+    }
+}
+
+/// An extreme downsampling ratio (each 8192-frame chunk yields well under one output frame) still
+/// terminates with the one-shot output length.
+#[test]
+fn resampler_extreme_ratio_terminates() {
+    let sr = 4_000_000_000u32;
+    let x = Synth::take(22050, 600_000);
+    let got = stream_resample(&x, sr, 8192);
+    assert_eq!(got.len(), __probe::one_shot_len(x.len(), sr));
+}
+
 fn print_drift_header() {
     eprintln!("| rate | min | differing | max_abs | max_ulp | len |");
     eprintln!("|---|---|---|---|---|---|");
