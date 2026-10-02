@@ -218,6 +218,11 @@ impl StreamResampler {
     }
 
     /// Feed native-rate mono; append releasable output to `out`.
+    ///
+    /// Output is released after every rubato call, not once per `push`, so a single `push` of a
+    /// whole signal never holds more than one chunk's output in `produced`. The release cap already
+    /// counts the whole of `input` (`total_in` is advanced first), so releasing early releases
+    /// exactly the same samples, in the same order.
     pub fn push(&mut self, input: &[f32], out: &mut Vec<f32>) -> Result<()> {
         self.total_in += input.len();
         let mut rest = input;
@@ -226,6 +231,7 @@ impl StreamResampler {
                 // Whole chunk available: process straight from the caller's slice.
                 let (chunk, tail) = rest.split_at(RESAMPLE_CHUNK);
                 self.run(chunk, None)?;
+                self.release(out);
                 rest = tail;
             } else {
                 let take = (RESAMPLE_CHUNK - self.pending.len()).min(rest.len());
@@ -234,12 +240,12 @@ impl StreamResampler {
                 if self.pending.len() == RESAMPLE_CHUNK {
                     let chunk = std::mem::take(&mut self.pending);
                     self.run(&chunk, None)?;
+                    self.release(out);
                     self.pending = chunk;
                     self.pending.clear();
                 }
             }
         }
-        self.release(out);
         Ok(())
     }
 
