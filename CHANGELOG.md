@@ -4,6 +4,70 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.1.0] - unreleased
+
+Bounded memory for long inputs. All memory figures are macOS `peak memory footprint` (MiB, median
+of 3) on an Apple M4 Pro, 48 kHz synthetic mono, full model `beat_this.onnx`.
+
+### Added
+
+- `BeatThis::stream` / `BeatStream::{push, finish, finish_timed}`: a streaming front end. Push
+  mono `f32` chunks of any size as they are decoded; the whole signal never has to be in memory.
+  Peak memory on 60 min of 48 kHz mono: **620.5 MiB** (vs 5 651.0 MiB through 1.0.0's
+  `analyze_audio`), growing linearly by **93.8 MiB per hour** of audio (5 / 10 / 20 / 60 min:
+  533.7 / 542.2 / 558.0 / 620.5 MiB). Of that, about 3 MB is front-end state, independent of the
+  input length; the growth is the mel spectrogram (88 MiB per hour) and the beat logits. Output:
+  bit-identical to `analyze_audio` on the same samples, for every chunk size; against 1.0.0,
+  bit-identical for 22 050 Hz input and 22 050·2^k Hz sources (11.025 / 44.1 / 88.2 kHz), and at
+  other rates different by the resampler drift described below.
+- `BeatThis::analyze_owned` / `analyze_owned_timed`: take the caller's `Vec<f32>` and free it before
+  the beat model runs. Bit-identical to `analyze_audio`.
+
+### Changed
+
+- `analyze_audio`, `analyze_audio_timed`, `analyze_owned(_timed)` and `analyze_file` run through
+  `BeatStream` (one push of the whole signal). Bit-identical to the whole-buffer pipeline they
+  replace; the slice is no longer copied. 60 min at 48 kHz: 1 278.5 MiB through `analyze_audio`
+  (1.0.0: 5 651.0), of which 659 MiB is the caller's own native-rate buffer.
+- The rten backend no longer clones model inputs or outputs. Bit-identical (identity suite). At
+  20 min this removed 202 MiB of PCM copies from the mel stage.
+- The mel spectrogram is computed in 64-frame-aligned windows of 1 536 frames (about 30.7 s)
+  instead of one whole-signal graph run. Bit-identical on rten (identity suite, run on arm64 NEON
+  and on x86_64 AVX2+FMA under emulation; the alignment avoids a rounding difference in rten-gemm's
+  partial column tiles). At 60 min the mel stage went from 4 709.8 to 2 519.0 MiB. A custom mel
+  model passed to `BeatThis::from_models` must use hop 441; a mismatch is reported as an error.
+- The resampler runs in 8 192-frame chunks at every input rate (decision D1, accepted on 2026-10-02
+  by Dani). For 22 050·2^k Hz sources (tested at 11.025, 44.1 and 88.2 kHz) the samples are
+  bit-identical to 1.0.0. At other rates rubato's read position is renormalised per chunk instead of accumulated
+  over the whole input, so the resampled samples drift from 1.0.0's, growing with duration: at
+  48 kHz max |Δ| 4.24e-5 at 5 min and 1.86e-4 at 20 min; the largest seen was 1.57e-3 (32 kHz,
+  20 min). Output length and leading delay are unchanged. Downstream, mel values moved by at most
+  3.47e-4 and logits by at most 2.10e-4, and **beats and downbeats were bit-identical** on every
+  input tested: the committed mp3 upsampled to 48 kHz, a 20-min 48 kHz synthetic signal (small and
+  full models), and a 23-file corpus decoded at 48 kHz (full model, 23 of 23). This applies to
+  `load_audio` too. Memory, `resample` stage at 60 min: 2 376.5 → 1 717.7 MiB at 48 kHz, 2 215.8 →
+  1 610.0 MiB at 44.1 kHz.
+- A sample rate of 0 is an error from `analyze_audio`, `analyze_owned` and `stream` at every input
+  length. 1.0.0 returned an error for up to 2 samples and panicked inside
+  rubato from 3 samples on.
+
+### Notes
+
+- Identity is checked by `tests/identity_v1_0_0.rs`, which runs a verbatim copy of the 1.0.0
+  pipeline live on the same inputs and compares with `to_bits()`; 48 kHz-class inputs are checked
+  against drift bounds (PCM 2e-3, mel 5e-4, logits 5e-4) with beats and downbeats bit-identical.
+  The Python goldens and the rten/ort cross-runtime test pass unchanged.
+- Bit identity is verified against this repository's `Cargo.lock` (rten 0.24.0 / rten-gemm 0.24.0,
+  rubato 3.0.0, rustfft 6.4.1). The dependency ranges in `Cargo.toml` are unchanged, so a consumer
+  that resolves a newer patch release could get different kernels and lose bit identity. The
+  AVX-512 path (rten-gemm NR 32) is covered by reading the source only; it has not been executed.
+- The smallest |logit| seen in the corpus (1.97e-6) is below the largest logit drift (8.96e-5), so
+  at 48 kHz-class rates a beat could in principle cross the threshold on some input, though none
+  did on the inputs above.
+- On macOS a buffer freed by the caller (or by `analyze_owned`) can stay in the process footprint
+  for a while after `free`, which is why `analyze_owned` peaks about as high as `analyze_audio`;
+  use `stream` to stay at O(chunk). Linux memory has not been measured yet.
+
 ## [1.0.0] - 2026-05-30
 
 Parity-with-the-reference release. Parity with the Python

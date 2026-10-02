@@ -198,8 +198,13 @@ for chunk in decoded_chunks {             // mono f32, any chunk size
 let analysis = stream.finish()?;          // or finish_timed() for per-stage timing
 ```
 
-The stream holds O(chunk) of audio plus the mel spectrogram (about 92 MB per hour). All three
-return the same analysis, bit for bit, whatever the chunk sizes.
+The stream holds about 3 MB of audio state plus the mel spectrogram. Measured on macOS with the
+full model, 60 minutes of 48 kHz audio peak at 620 MiB through `stream` (1.0.0's `analyze_audio`:
+5.5 GiB), and the peak grows linearly by about 94 MiB per hour of audio. All three return the same
+analysis, bit for bit, whatever the chunk sizes. Compared with 1.0.0, output is bit-identical for
+22 050 Hz input and 44.1 kHz-class sources (22 050·2^k Hz); at other rates (48 kHz etc.) the
+resampler now runs in chunks and its samples drift very slightly from 1.0.0's, with beats and
+downbeats unchanged on every input tested (see the [CHANGELOG](CHANGELOG.md), 1.1.0).
 
 ## Output formats
 
