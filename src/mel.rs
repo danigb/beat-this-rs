@@ -18,32 +18,24 @@ impl<M: Model> MelExtractor<M> {
 
     /// Extract mel spectrogram from mono PCM samples at 22050 Hz.
     ///
-    /// Input: mono f32 samples (any length), taken by value so building the input tensor is a
-    /// move rather than a copy.
-    /// Output: Tensor with shape `[1, time_frames, 128]`.
+    /// Input: mono f32 samples (any length); they are freed as soon as the mel is computed.
+    /// Output: Tensor with shape `[1, time_frames, 128]`, with
+    /// `time_frames = 1 + samples.len() / 441` (hop_length=441 for 50 fps at 22050 Hz).
     ///
-    /// The number of time frames depends on sample count:
-    /// `time_frames ≈ samples.len() / 441` (hop_length=441 for 50 fps at 22050 Hz).
+    /// The graph runs in windows of `MEL_STRIDE` owned frames (see `extract_windowed`), so its
+    /// intermediates are O(window) instead of O(signal). On rten the result is bit-identical to one
+    /// whole-signal run of the graph (the 1.0.0 behaviour); other backends take the same windows,
+    /// within their own numeric tolerance.
     pub fn extract_owned(&mut self, samples: Vec<f32>) -> Result<Tensor> {
-        let input = Tensor {
-            shape: vec![1, samples.len()],
-            data: samples,
-        };
-
-        let mut outputs = self.model.run(&[("audio_pcm", &input)])?;
-
-        let mel = outputs
-            .remove("mel_spectrogram")
-            .ok_or_else(|| anyhow!("Model missing 'mel_spectrogram' output"))?;
-
-        ensure!(
-            mel.shape.len() == 3 && mel.shape[0] == 1 && mel.shape[2] == 128,
-            "Unexpected mel shape: {:?}",
-            mel.shape
-        );
-
+        let mel = extract_windowed(&mut self.model, &samples, MEL_STRIDE)?;
+        drop(samples);
         Ok(mel)
     }
+}
+
+/// Samples in the first graph run of [`MelExtractor::extract_owned`] for an `n`-sample signal.
+pub(crate) fn first_window_len(n: usize) -> usize {
+    n.min(interior_end_sample(0, MEL_STRIDE))
 }
 
 /// Mel graph frame step (50 fps at 22 050 Hz).

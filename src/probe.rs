@@ -58,20 +58,24 @@ pub fn resample(samples: Vec<f32>, source_sr: u32) -> Result<Vec<f32>> {
     crate::audio::resample(samples, source_sr, crate::TARGET_SAMPLE_RATE)
 }
 
-/// Build the mel input exactly as the pipeline does before running the graph (`mel.rs`
-/// `extract_owned` and `runtime/rten.rs` `run`): the `Tensor` takes the samples by move and rten is
-/// handed a borrowed view of them, so no PCM copy is made. Returns without running the graph; the
-/// result is the number of bytes held.
+/// Build the mel input exactly as the pipeline does before its first graph run (`mel.rs`
+/// `extract_owned` → `extract_windowed` → `run_window`, and `runtime/rten.rs` `run`): the mel graph
+/// now runs per window, so the input is a `Tensor` holding a copy of the first window's samples
+/// (`min(n, one window)`), and rten is handed a borrowed view of it. The whole signal stays alive
+/// alongside, as it does in the pipeline. Returns without running the graph; the result is the
+/// number of bytes held by the window tensor.
 ///
 /// Must be updated in lockstep whenever the real input path changes.
 pub fn mel_input(samples: Vec<f32>) -> Result<usize> {
+    let len = crate::mel::first_window_len(samples.len());
     let input = Tensor {
-        shape: vec![1, samples.len()],
-        data: samples,
+        shape: vec![1, len],
+        data: samples[..len].to_vec(),
     };
     let value = rten::ValueView::from_shape(input.shape.as_slice(), input.data.as_slice())
         .map_err(|e| anyhow::anyhow!("rten: failed to create input tensor: {e}"))?;
     std::hint::black_box(&value);
+    std::hint::black_box(&samples);
     Ok(std::hint::black_box(&input).data.len() * std::mem::size_of::<f32>())
 }
 
