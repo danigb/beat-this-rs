@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 
+#[cfg(feature = "decode")]
 pub use audio::{load_audio, AudioData};
 pub use output::{beat_counts, calculate_bpm};
 #[cfg(feature = "ort")]
@@ -156,6 +157,7 @@ impl<M: Model> BeatThis<M> {
     ///
     /// Loads the file, resamples to 22050 Hz mono, computes mel spectrogram,
     /// runs beat prediction, and decodes into beat/downbeat timestamps.
+    #[cfg(feature = "decode")]
     pub fn analyze_file(&mut self, path: &Path) -> Result<BeatAnalysis> {
         let audio = load_audio(path, TARGET_SAMPLE_RATE)?;
         self.analyze_audio(&audio.samples, audio.sample_rate)

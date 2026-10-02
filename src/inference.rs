@@ -223,8 +223,8 @@ mod tests {
                 let write_start = (start + BORDER_SIZE as i32).max(0) as usize;
                 let write_end =
                     ((start as usize).wrapping_add(chunk_time) - BORDER_SIZE).min(full_time);
-                for i in write_start..write_end {
-                    covered[i] = true;
+                for frame in &mut covered[write_start..write_end] {
+                    *frame = true;
                 }
             }
             assert!(

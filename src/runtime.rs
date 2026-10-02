@@ -8,7 +8,8 @@ use std::collections::HashMap;
 use std::path::Path;
 
 /// Simple f32 tensor with shape (row-major / C-order).
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Tensor {
     pub shape: Vec<usize>,
     pub data: Vec<f32>,

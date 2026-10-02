@@ -161,6 +161,17 @@ beat-this "music/**/*.mp3" --json
 
 ## Library usage
 
+The default feature set pulls on a lot of dependencies required for the CLI. If you intend to use 
+the crate as a library, you should disable default features and enable only the ones needed:
+
+- `decode` for audio file decoding using `symphonia`
+- `serde` for serialization of the `Tensor` struct
+- `ort` for the ONNX Runtime backend.
+
+```toml
+beat-this = { version = "1", default-features = false, features = ["decode"] }
+```
+
 ```rust
 use std::path::Path;
 use beat_this::{BeatThis, RtenRuntime};

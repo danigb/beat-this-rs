@@ -1,3 +1,5 @@
+#![cfg(feature = "decode")]
+
 //! Golden parity test against the Python reference (`beat_this`).
 //!
 //! Runs the full Rust pipeline (audio -> mel -> inference -> postprocessing) on

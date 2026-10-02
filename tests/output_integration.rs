@@ -1,3 +1,5 @@
+#![cfg(feature = "decode")]
+
 use std::path::Path;
 
 use beat_this::{beat_counts, calculate_bpm, BeatThis, RtenRuntime};
