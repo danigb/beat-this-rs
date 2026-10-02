@@ -164,12 +164,14 @@ pub(crate) fn chunking_is_exact(source_sr: u32, target_sr: u32) -> bool {
     (t * 1_048_576.0).fract() == 0.0 && t < 1024.0
 }
 
-/// Push-based sinc resampler with the one-shot [`resample`]'s parameters, leading delay and
+/// Push-based sinc resampler with the one-shot `resample`'s parameters, leading delay and
 /// output length.
 ///
-/// Feeds rubato fixed chunks of [`RESAMPLE_CHUNK`] frames, so memory is O(chunk) instead of
-/// O(signal). Output is bit-identical to the one-shot call when [`chunking_is_exact`], and drifts
-/// slightly otherwise (rubato advances its read position as an `f64` and renormalises it per chunk).
+/// Feeds rubato fixed chunks of `RESAMPLE_CHUNK` (8192) frames, so memory is O(chunk) instead of
+/// O(signal). Output is bit-identical to 1.0.0's one-shot call when `chunking_is_exact` (rubato's
+/// step `source / target` is a short dyadic fraction), and differs otherwise: rubato advances its
+/// read position as an `f64` and renormalises it per chunk, where the one-shot call accumulates it
+/// over the whole input and loses precision on long inputs.
 /// The output does not depend on how the input is split across `push` calls.
 pub struct StreamResampler {
     inner: Async<f32>,
@@ -316,9 +318,11 @@ impl StreamResampler {
 ///
 /// The signal is resampled in fixed chunks by [`StreamResampler`], so rubato's buffers stay small
 /// and the input is freed before the flush. The output length always equals 1.0.0's one-shot call.
-/// For sources of 22050 * 2^k Hz (such as 44.1 kHz, [`chunking_is_exact`]) the samples are
-/// bit-identical to 1.0.0's; at other rates (48 kHz etc.) they drift slightly from 1.0.0's
-/// (accepted for 1.1 as decision D1 of the bounded-memory work).
+/// Where [`chunking_is_exact`] holds for the source/target pair (22050 * 2^k Hz sources to
+/// 22050 Hz, such as 44.1 kHz) the samples are bit-identical to 1.0.0's. Otherwise (48 kHz etc.)
+/// they differ from 1.0.0's: slightly on short inputs (accepted for 1.1 as decision D1 of the
+/// bounded-memory work), and more on long ones, where 1.0.0's one-shot call loses read-position
+/// precision and this chunked path does not (see the 1.1.0 CHANGELOG).
 pub fn resample(samples: Vec<f32>, source_sr: u32, target_sr: u32) -> Result<Vec<f32>> {
     if source_sr == target_sr {
         return Ok(samples);

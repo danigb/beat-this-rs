@@ -179,7 +179,7 @@ pub(crate) fn extract_windowed<M: Model>(
 }
 
 /// Push-based mel spectrogram: keeps only the samples the next window needs, so memory is
-/// O(window) plus the mel frames emitted so far. Output is identical to [`extract_windowed`] with
+/// O(window) plus the mel frames emitted so far. Output is identical to `extract_windowed` with
 /// the same stride, whatever the push sizes.
 pub struct MelStream {
     stride: usize,
