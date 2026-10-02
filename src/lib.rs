@@ -210,6 +210,9 @@ impl<M: Model> BeatThis<M> {
     /// (about 92 MB per hour of audio), instead of the whole signal. The result is bit-identical
     /// to [`analyze_audio`](Self::analyze_audio) on the concatenated chunks. Errors if
     /// `sample_rate` is 0.
+    ///
+    /// The stream mutably borrows this `BeatThis` for its lifetime (so it cannot be stored beside
+    /// it in one struct); with the rten model it is `Send`, so it can be moved to another thread.
     pub fn stream(&mut self, sample_rate: u32) -> Result<BeatStream<'_, M>> {
         BeatStream::new(self, sample_rate)
     }

@@ -25,8 +25,10 @@ use crate::{BeatAnalysis, BeatThis, Model, TimedAnalysis, TARGET_SAMPLE_RATE};
 /// input length) plus the mel frames computed so far, which grow by about 92 MB per hour of audio.
 /// `finish` then adds the beat logits (two `f32` per mel frame) and the beat model's per-chunk work.
 ///
-/// The stream borrows the [`BeatThis`] mutably for its lifetime, so the loaded models are reused.
-/// Dropping a stream without calling `finish` is fine. After a `push` returns an error the stream is
+/// The stream borrows the [`BeatThis`] mutably for its lifetime, so the loaded models are reused;
+/// it therefore cannot be stored in the same struct as that `BeatThis`. With the rten model it is
+/// `Send`, so it can be moved to another thread together with that borrow. Dropping a stream
+/// without calling `finish` is fine. After a `push` returns an error the stream is
 /// unusable: every later `push` or `finish` returns an error.
 pub struct BeatStream<'a, M: Model> {
     bt: &'a mut BeatThis<M>,

@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::{bail, Result};
-use beat_this::{BeatThis, Model, RtenRuntime, Tensor};
+use beat_this::{BeatStream, BeatThis, Model, RtenRuntime, Runtime, Tensor};
 
 const MEL_MODEL_PATH: &str = "models/mel_spectrogram.onnx";
 const BEAT_MODEL_PATH: &str = "models/beat_this_small.onnx";
@@ -114,4 +114,13 @@ fn stream_is_unusable_after_an_error() {
     stream.push(&[0.0; 1000]).unwrap();
     let err = stream.finish().unwrap_err();
     assert!(err.to_string().contains("model failure"), "{err}");
+}
+
+/// Compile-time check behind the `Send` claim in the `BeatStream` docs: with the rten model, a
+/// stream (and the `BeatThis` it borrows) can be moved to another thread.
+#[test]
+fn beat_stream_is_send_with_rten() {
+    fn assert_send<T: Send>() {}
+    assert_send::<BeatStream<'static, <RtenRuntime as Runtime>::Model>>();
+    assert_send::<BeatThis<<RtenRuntime as Runtime>::Model>>();
 }
