@@ -92,6 +92,11 @@ pub fn chunking_is_exact(source_sr: u32) -> bool {
     crate::audio::chunking_is_exact(source_sr, crate::TARGET_SAMPLE_RATE)
 }
 
+/// As [`chunking_is_exact`], for any target rate (as `load_audio` uses it).
+pub fn chunking_is_exact_between(source_sr: u32, target_sr: u32) -> bool {
+    crate::audio::chunking_is_exact(source_sr, target_sr)
+}
+
 /// Output length of the one-shot resample call for `n` input frames.
 pub fn one_shot_len(n: usize, source_sr: u32) -> usize {
     crate::audio::one_shot_len(n, crate::TARGET_SAMPLE_RATE as f64 / source_sr as f64)

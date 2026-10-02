@@ -122,6 +122,12 @@ fn assert_same(what: &str, new: &BeatAnalysis, old: &v1::V1Analysis) {
 /// E1 answered 2026-10-02). The largest drifts recorded in `worklog/03-chunked-resampler.md` over
 /// the in-repo inputs, the 5/20-minute synth at 16/32/48/96 kHz and the 23-file corpus are PCM
 /// 1.57e-3 (32 kHz, 20 min), mel 3.47e-4 and logits 2.10e-4; the bounds add margin.
+///
+/// **Valid only for the inputs they are applied to: at most 20 minutes** (40 s in the default
+/// tests, 5 and 20 min in the ignored long ones). They are not a general bound. The drift grows with
+/// the length, because 1.0.0's one-shot resampler loses read-position precision on long inputs
+/// (`resampler_accuracy_long`): at 48 kHz the beat-logit drift is 3.1e-4 at 40 min, 4.35e-3 at
+/// 50 min and 1.63e-2 at 60 min, where beats move (`long_drift_downstream_48000`).
 const PCM_DRIFT_BOUND: f32 = 2e-3;
 const MEL_DRIFT_BOUND: f32 = 5e-4;
 const LOGIT_DRIFT_BOUND: f32 = 5e-4;
@@ -132,7 +138,7 @@ fn rate_is_exact(rate: u32) -> bool {
 }
 
 /// D1: same shapes and lengths, beats and downbeats bit-identical, mel and logits within the
-/// drift bounds. Prints the bit-level differences.
+/// drift bounds (valid up to 20 min, see `MEL_DRIFT_BOUND`). Prints the bit-level differences.
 fn assert_drift(what: &str, new: &BeatAnalysis, old: &v1::V1Analysis) {
     assert_eq!(new.mel.shape, old.mel.shape, "{what}: mel shape");
     let mel = bit_diff(&new.mel.data, &old.mel.data);
@@ -166,7 +172,8 @@ fn assert_same_or_drift(what: &str, rate: u32, new: &BeatAnalysis, old: &v1::V1A
     }
 }
 
-/// D1 on resampled PCM: same length, within the PCM drift bound. Prints the difference.
+/// D1 on resampled PCM: same length, within the PCM drift bound (valid up to 20 min, see
+/// `MEL_DRIFT_BOUND`). Prints the difference.
 fn assert_pcm_drift(what: &str, got: &[f32], reference: &[f32]) {
     let d = bit_diff(got, reference);
     if d.differing > 0 {
@@ -578,6 +585,8 @@ fn resampler_drift_report_48000() {
     }
     let d = bit_diff(&first, &reference);
     eprintln!("48 kHz, 10 s drift vs 1.0.0: {d:?}");
+    // A regression guard for this 10 s input only: the drift grows with the length (4.2e-5 at
+    // 5 min, 1.8e-2 at 60 min, `resampler_drift_long_48000`).
     assert!(d.max_abs <= 1e-6, "drift grew: {d:?}");
     // Degradation: at 48 kHz chunking does change the output, so a comparison that saw nothing
     // here would not be comparing the chunked path.
@@ -882,6 +891,464 @@ fn routed_resample_matches_v1_0_0() {
                 }
             }
         }
+    }
+}
+
+// --- long inputs: accuracy against an analytic signal ------------------------------------------
+//
+// At rates whose ratio is not a short dyadic fraction, the chunked resampler and 1.0.0's one-shot
+// call differ, and the difference grows with the input length. These tests decide which side is
+// right by resampling a pure tone whose ideal resampled values are known in closed form.
+
+/// The analytic test tone: 1 kHz, amplitude 0.5. 1 kHz is deep in the pass band of every
+/// conversion used here (rubato's cutoff is 0.95 of the lower Nyquist: 10.5 kHz at 22 050 Hz).
+const TONE_HZ: u64 = 1000;
+const TONE_AMP: f64 = 0.5;
+
+/// `n` samples of the tone at `sr`. The phase of sample `j` is `(j * 1000 mod sr) / sr` cycles,
+/// computed in integers, so it is exact for any `j`.
+fn tone(sr: u32, n: usize) -> Vec<f32> {
+    (0..n as u64)
+        .map(|j| {
+            let cycles = ((j * TONE_HZ) % sr as u64) as f64 / sr as f64;
+            (TONE_AMP * (std::f64::consts::TAU * cycles).sin()) as f32
+        })
+        .collect()
+}
+
+/// The ideal value of output frame `k` when the tone is resampled from `sr` to `target` with this
+/// crate's rubato 3.0.0 settings (sinc_len 256, oversampling 256, linear interpolation between sinc
+/// points), in f64.
+///
+/// Alignment, derived from rubato 3.0.0's source and shared by both paths, which use the same
+/// parameters: the read position starts at `last_index = -(256 - 1)` (`asynchro_sinc.rs`
+/// `init_last_index`) and advances by `t = sr / target` before each output frame, so frame `k` is
+/// read at `idx_k = -255 + (k + 1) t`. The input sits at offset `2 * 256` of rubato's buffer, and
+/// sinc table `s` holds the kernel at offsets `p + 1 - (s + 1) / 256 - 128` (`sinc.rs` `make_sincs`),
+/// so with linear interpolation between tables `s` and `s + 1` frame `k` is the band-limited input
+/// at input position `tau_k = idx_k + 127 + 1/256 = (k + 1) t - 128 + 1/256`. Neither path trims
+/// that leading delay. The tone's phase there is `1000 (k + 1) / target - 1000 (128 - 1/256) / sr`
+/// cycles; the first term is reduced modulo 1 in integers, so the expected value carries no position
+/// error at any `k`. (rubato's own `t` is `1 / (target / sr)` in f64, at most 1 ULP from the exact
+/// ratio: under 2e-8 input samples of position after 80 M output frames, which is negligible here.)
+/// The kernel's gain at 1 kHz is taken as 1; its deviation is part of the error floor measured.
+fn tone_expected(k: usize, sr: u32, target: u32) -> f64 {
+    TONE_AMP * tone_phase(k, sr, target).sin()
+}
+
+/// The tone's phase in radians at output frame `k` (see [`tone_expected`]).
+fn tone_phase(k: usize, sr: u32, target: u32) -> f64 {
+    let whole = ((k as u64 + 1) * TONE_HZ % target as u64) as f64 / target as f64;
+    let delay = TONE_HZ as f64 * (128.0 - 1.0 / 256.0) / sr as f64;
+    std::f64::consts::TAU * (whole - delay)
+}
+
+/// Error of one resampled segment against [`tone_expected`].
+#[derive(Clone, Copy, Debug)]
+struct ToneError {
+    rms: f64,
+    max_abs: f64,
+    /// Mean position error over the segment in input samples, from the phase of the output against
+    /// the expected tone (positive: the output reads the input late).
+    shift: f64,
+}
+
+/// Errors per segment of `seg` output frames. The first and last `edge` frames are left out: the
+/// tone starts and stops abruptly there, so the band-limited ideal does not apply.
+fn tone_errors(y: &[f32], sr: u32, target: u32, seg: usize, edge: usize) -> Vec<ToneError> {
+    let end = y.len().saturating_sub(edge);
+    let mut out = Vec::new();
+    let mut start = 0;
+    while start < end {
+        let (lo, hi) = (start.max(edge), (start + seg).min(end));
+        let (mut sq, mut max_abs) = (0.0f64, 0.0f64);
+        // Least-squares fit of v = a sin(phase) + b cos(phase) over the segment.
+        let (mut ss, mut sc, mut cc, mut vs, mut vc) = (0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f64);
+        for (k, &v) in y.iter().enumerate().take(hi).skip(lo) {
+            let e = tone_expected(k, sr, target);
+            let d = v as f64 - e;
+            sq += d * d;
+            max_abs = max_abs.max(d.abs());
+            let (s, c) = tone_phase(k, sr, target).sin_cos();
+            ss += s * s;
+            sc += s * c;
+            cc += c * c;
+            vs += v as f64 * s;
+            vc += v as f64 * c;
+        }
+        let n = (hi - lo).max(1) as f64;
+        let det = ss * cc - sc * sc;
+        let a = (vs * cc - vc * sc) / det;
+        let b = (vc * ss - vs * sc) / det;
+        // v = A sin(phase + phi) = A cos(phi) sin(phase) + A sin(phi) cos(phase), so phi = atan2(b, a);
+        // a read position late by d input samples is phi = -2 pi 1000 d / sr.
+        let phi = b.atan2(a);
+        out.push(ToneError {
+            rms: (sq / n).sqrt(),
+            max_abs,
+            shift: -phi * sr as f64 / (std::f64::consts::TAU * TONE_HZ as f64),
+        });
+        start += seg;
+    }
+    out
+}
+
+/// The chunked resampler from `sr` to `target`, fed in 8192-frame pushes.
+fn stream_resample_to(x: &[f32], sr: u32, target: u32) -> Vec<f32> {
+    let mut r = StreamResampler::new(sr, target).unwrap();
+    let mut out = Vec::new();
+    for piece in x.chunks(8192) {
+        r.push(piece, &mut out).unwrap();
+    }
+    r.finish(&mut out).unwrap();
+    out
+}
+
+/// Per-minute tone errors of the chunked path (this crate) and of 1.0.0's one-shot call, on
+/// `minutes` of the tone at `sr`, resampled to `target`. Prints a table.
+fn tone_accuracy(sr: u32, target: u32, minutes: usize) -> (Vec<ToneError>, Vec<ToneError>) {
+    let n = minutes * 60 * sr as usize;
+    let seg = 60 * target as usize;
+    let edge = target as usize;
+    let chunked = {
+        let y = stream_resample_to(&tone(sr, n), sr, target);
+        tone_errors(&y, sr, target, seg, edge)
+    };
+    let one_shot = {
+        let y = audio::resample(tone(sr, n), sr, target).expect("1.0.0 resample");
+        tone_errors(&y, sr, target, seg, edge)
+    };
+    eprintln!(
+        "tone {sr} -> {target} Hz, {minutes} min (per minute of output; shift in input samples)"
+    );
+    eprintln!("| minute | chunked rms | chunked max | chunked shift | 1.0.0 rms | 1.0.0 max | 1.0.0 shift |");
+    eprintln!("|---|---|---|---|---|---|---|");
+    for (m, (c, o)) in chunked.iter().zip(&one_shot).enumerate() {
+        eprintln!(
+            "| {}-{} | {:.2e} | {:.2e} | {:.2e} | {:.2e} | {:.2e} | {:.2e} |",
+            m,
+            m + 1,
+            c.rms,
+            c.max_abs,
+            c.shift,
+            o.rms,
+            o.max_abs,
+            o.shift
+        );
+    }
+    (chunked, one_shot)
+}
+
+/// Which resampler is accurate on long inputs: the chunked path (this crate) or 1.0.0's one-shot
+/// call. Both are compared with the analytic tone, minute by minute, over an hour.
+///
+/// Recorded run (arm64, `worklog/03-chunked-resampler.md`, "Long inputs"): the chunked path's
+/// per-minute rms error is 3.24e-6 to 3.30e-6 at 48 kHz, 6.89e-6 at 96 kHz and 2.90e-6 to 3.09e-6
+/// for 44.1 -> 48 kHz, over the whole hour; its position error grows linearly but stays under
+/// 2.2e-5 input samples. 1.0.0's error grows with the length (48 kHz: rms 3.65e-6 in minute 1,
+/// 1.19e-4 in minute 20, 2.80e-4 in minute 46, 1.14e-2 in minute 60). rubato accumulates the read
+/// position by repeated f64 addition over the whole input, so each addition rounds at the spacing
+/// of the position's binade; past 2^27 input frames (46.6 min at 48 kHz) that spacing doubles and,
+/// for this ratio's bits, the per-frame rounding error jumps. At 96 kHz the step is exactly twice
+/// the 48 kHz one, so the jump lands at 2^28 frames, the same 46.6 min (measured). The chunked path
+/// subtracts each chunk's length from the position, so it stays below 2^14 and its rounding never
+/// grows.
+///
+/// Asserted, with margin over the recorded run: the chunked path's rms <= 2e-5, max <= 5e-5 and
+/// |position error| <= 1e-4 input samples at every minute, and no minute's rms above 1.5 times the
+/// first; 1.0.0's worst minute above 10 times its first minute and 10 times the chunked path's worst
+/// minute. For the 22 050 Hz target, 1.0.0's last minute is also above 10 times its minute 46
+/// (the jump past 46.6 min).
+#[test]
+#[ignore = "long (3 x 60 min, ~5.5 GB rss): run with --release -- --ignored --nocapture"]
+fn resampler_accuracy_long() {
+    for (sr, target, minutes) in [
+        (48000u32, 22050u32, 60usize),
+        (96000, 22050, 60),
+        (44100, 48000, 60),
+    ] {
+        let (chunked, one_shot) = tone_accuracy(sr, target, minutes);
+        let what = format!("{sr} -> {target} Hz, {minutes} min");
+        let first = chunked[0].rms;
+        for (m, c) in chunked.iter().enumerate() {
+            assert!(
+                c.rms <= 2e-5 && c.max_abs <= 5e-5 && c.shift.abs() <= 1e-4,
+                "{what}: chunked error at minute {m}: {c:?}"
+            );
+            assert!(
+                c.rms <= 1.5 * first,
+                "{what}: chunked error grew at minute {m}: {c:?} (first minute rms {first:e})"
+            );
+        }
+        let worst = |v: &[ToneError]| v.iter().map(|e| e.rms).fold(0.0f64, f64::max);
+        let (c_worst, o_worst, o_first) = (worst(&chunked), worst(&one_shot), one_shot[0].rms);
+        assert!(
+            o_worst > 10.0 * o_first && o_worst > 10.0 * c_worst,
+            "{what}: 1.0.0's error did not grow: first minute rms {o_first:e}, worst {o_worst:e}, chunked worst {c_worst:e}"
+        );
+        if target == 22050 {
+            let (m46, last) = (one_shot[45].rms, one_shot.last().unwrap().rms);
+            assert!(
+                last > 10.0 * m46,
+                "{what}: no jump past 2^27 frames: minute 46 rms {m46:e}, last {last:e}"
+            );
+        }
+        eprintln!(
+            "{what}: worst minute rms: chunked {c_worst:.2e}, 1.0.0 {o_worst:.2e} ({:.0}x)",
+            o_worst / c_worst
+        );
+    }
+}
+
+// --- long inputs: drift against 1.0.0 at 48 kHz ---------------------------------------------------
+
+/// Largest |difference| per bin of `bin` frames (lengths must match).
+fn max_abs_per_bin(a: &[f32], b: &[f32], bin: usize) -> Vec<f32> {
+    assert_eq!(a.len(), b.len());
+    a.chunks(bin)
+        .zip(b.chunks(bin))
+        .map(|(x, y)| {
+            x.iter()
+                .zip(y)
+                .map(|(p, q)| (p - q).abs())
+                .fold(0.0f32, f32::max)
+        })
+        .collect()
+}
+
+/// Resampled PCM, chunked (this crate) against 1.0.0's one-shot call, on the 48 kHz synthetic signal
+/// at 5 to 60 minutes. Documents the drift; asserts only equal lengths and the shape recorded in
+/// `worklog/03-chunked-resampler.md` ("Long inputs"): the drift grows with the length, and once the
+/// input passes 2^27 frames (46.6 min), where 1.0.0's accumulated read position loses a further
+/// bit, 1.0.0's position error reverses direction and grows much faster: the difference dips
+/// towards zero just after 2796 s of output, then rises above anything before it within about a
+/// minute (see `resampler_accuracy_long` for which side is accurate).
+#[test]
+#[ignore = "long (up to 60 min at 48 kHz, ~3 GB): run with --release -- --ignored --nocapture"]
+fn resampler_drift_long_48000() {
+    let sr = 48000u32;
+    eprintln!("| min | differing | max_abs | len |");
+    eprintln!("|---|---|---|---|");
+    let mut rows = Vec::new();
+    for minutes in [5usize, 10, 20, 40, 50, 60] {
+        let x = Synth::take(sr, minutes * 60 * sr as usize);
+        let got = stream_resample(&x, sr, 8192);
+        let reference = reference_resample(&x, sr);
+        let d = bit_diff(&got, &reference);
+        assert_eq!(d.len_a, d.len_b, "length at {minutes} min");
+        eprintln!(
+            "| {minutes} | {} | {:.3e} | {} |",
+            d.differing, d.max_abs, d.len_a
+        );
+        rows.push((minutes, d.max_abs));
+        if minutes == 60 {
+            // Where the jump is: the largest |difference| per 10 s of output, around 2^27 input
+            // frames (2^27 / 48 000 = 2796.2 s; output frame k reads input near k * 48000 / 22050).
+            let bins = max_abs_per_bin(&got, &reference, 10 * 22050);
+            let before = bins[..270].iter().fold(0.0f32, |m, &v| m.max(v));
+            eprintln!("60 min: max |diff| over the first 45 min of output: {before:.3e}");
+            eprintln!("| output s | max |diff| |");
+            eprintln!("|---|---|");
+            for (b, v) in bins.iter().enumerate().take(290).skip(274) {
+                eprintln!("| {}-{} | {:.3e} |", b * 10, b * 10 + 10, v);
+            }
+            // 1.0.0's position error reverses direction there: the difference first dips towards
+            // zero, then grows far faster than before.
+            let dip = (274..290)
+                .min_by(|&a, &b| bins[a].total_cmp(&bins[b]))
+                .unwrap();
+            let jump = bins
+                .iter()
+                .position(|&v| v > 2.0 * before)
+                .expect("the drift jumps past 2^27 input frames");
+            eprintln!(
+                "60 min: smallest 10 s bin from 2740 s at {} s; first bin above twice the first-45-min maximum at {} s",
+                dip * 10,
+                jump * 10
+            );
+            assert!(
+                (2790..2830).contains(&(dip * 10)) && (2800..2900).contains(&(jump * 10)),
+                "the change is expected just past 2796.2 s: dip at {} s, jump at {} s",
+                dip * 10,
+                jump * 10
+            );
+        }
+    }
+    for w in rows.windows(2) {
+        assert!(w[1].1 > w[0].1, "drift did not grow: {rows:?}");
+    }
+}
+
+/// Beat or downbeat times whose bits differ, as `(index, 1.0.0, current)`.
+type Moved = Vec<(usize, f32, f32)>;
+
+/// [`Moved`] times, when the counts match.
+fn moved_times(old: &[f32], new: &[f32]) -> Moved {
+    old.iter()
+        .zip(new)
+        .enumerate()
+        .filter(|(_, (a, b))| a.to_bits() != b.to_bits())
+        .map(|(i, (&a, &b))| (i, a, b))
+        .collect()
+}
+
+/// `analyze_audio` (chunked resampler) against 1.0.0 on `minutes` of the 48 kHz synthetic signal,
+/// printed per 5 minutes. Returns the moved beats and downbeats (counts are asserted equal).
+fn long_downstream(minutes: usize, new: &mut NewBt, v1: &mut OldBt) -> (Moved, Moved) {
+    let x = Synth::take(48000, minutes * 60 * 48000);
+    let old = v1.analyze_audio(&x, 48000).unwrap();
+    let cur = new.analyze_audio(&x, 48000).unwrap();
+    drop(x);
+    let what = format!("{minutes} min @ 48000");
+    assert_eq!(cur.mel.shape, old.mel.shape, "{what}: mel shape");
+    assert_eq!(cur.beats.len(), old.beats.len(), "{what}: beat count");
+    assert_eq!(
+        cur.downbeats.len(),
+        old.downbeats.len(),
+        "{what}: downbeat count"
+    );
+    let mel = bit_diff(&cur.mel.data, &old.mel.data);
+    let beat = bit_diff(&cur.beat_logits, &old.beat_logits);
+    let down = bit_diff(&cur.downbeat_logits, &old.downbeat_logits);
+    eprintln!(
+        "{what}: mel max_abs {:.3e}; beat logits max_abs {:.3e}; downbeat logits max_abs {:.3e}; {} beats, {} downbeats",
+        mel.max_abs,
+        beat.max_abs,
+        down.max_abs,
+        old.beats.len(),
+        old.downbeats.len()
+    );
+    let seg = 5 * 60 * 50; // frames per 5 minutes
+    let mel_bins = max_abs_per_bin(&cur.mel.data, &old.mel.data, seg * 128);
+    let beat_bins = max_abs_per_bin(&cur.beat_logits, &old.beat_logits, seg);
+    let down_bins = max_abs_per_bin(&cur.downbeat_logits, &old.downbeat_logits, seg);
+    eprintln!("| minutes | mel max_abs | beat logit max_abs | downbeat logit max_abs |");
+    eprintln!("|---|---|---|---|");
+    for (i, ((m, b), d)) in mel_bins.iter().zip(&beat_bins).zip(&down_bins).enumerate() {
+        eprintln!("| {}-{} | {m:.3e} | {b:.3e} | {d:.3e} |", i * 5, i * 5 + 5);
+    }
+    let over = cur
+        .beat_logits
+        .iter()
+        .zip(&old.beat_logits)
+        .position(|(a, b)| (a - b).abs() > LOGIT_DRIFT_BOUND);
+    if let Some(f) = over {
+        eprintln!(
+            "{what}: first beat-logit drift above {LOGIT_DRIFT_BOUND:e} at frame {f} ({:.2} s)",
+            f as f32 / 50.0
+        );
+    }
+    let print_moved = |kind: &str, moved: &[(usize, f32, f32)], old_l: &[f32], new_l: &[f32]| {
+        for &(i, a, b) in moved {
+            let f = (a * 50.0).round() as usize;
+            let lo = f.saturating_sub(1);
+            let hi = (f + 3).min(old_l.len());
+            eprintln!(
+                "{what}: {kind} {i} moved {a} s -> {b} s ({:+.3} frames); logits frames {lo}..{hi}: 1.0.0 {:?}, current {:?}",
+                (b - a) * 50.0,
+                &old_l[lo..hi],
+                &new_l[lo..hi]
+            );
+        }
+    };
+    let beats = moved_times(&old.beats, &cur.beats);
+    let downbeats = moved_times(&old.downbeats, &cur.downbeats);
+    print_moved("beat", &beats, &old.beat_logits, &cur.beat_logits);
+    print_moved(
+        "downbeat",
+        &downbeats,
+        &old.downbeat_logits,
+        &cur.downbeat_logits,
+    );
+    eprintln!(
+        "{what}: {} of {} beats and {} of {} downbeats moved",
+        beats.len(),
+        old.beats.len(),
+        downbeats.len(),
+        old.downbeats.len()
+    );
+    (beats, downbeats)
+}
+
+/// Downstream effect of the long-input drift, full model only (`BEAT_THIS_MODEL` must name
+/// `beat_this.onnx`; the committed small model is not what users run). Documents, and asserts the
+/// recorded shape (`worklog/03-chunked-resampler.md`, "Long inputs"): at 40 and 50 min beats and
+/// downbeats are bit-identical to 1.0.0; at 60 min the beat and downbeat counts are equal and every
+/// moved time moved by at most one frame (20 ms). Run alone: the 1.0.0 reference takes ~5.6 GB at
+/// 60 min.
+#[test]
+#[ignore = "long (40/50/60 min at 48 kHz, full model, ~6 GB): run alone with --release -- --ignored --nocapture"]
+fn long_drift_downstream_48000() {
+    require_models!();
+    let model = beat_model_path();
+    eprintln!("beat model: {model}");
+    if !model.ends_with("beat_this.onnx") {
+        eprintln!("Skipping: set BEAT_THIS_MODEL=models/beat_this.onnx (the full model)");
+        return;
+    }
+    let mut new = new_bt();
+    let mut v1 = v1_bt();
+    for minutes in [40usize, 50, 60] {
+        let (beats, downbeats) = long_downstream(minutes, &mut new, &mut v1);
+        if minutes < 60 {
+            assert!(
+                beats.is_empty() && downbeats.is_empty(),
+                "{minutes} min: beats or downbeats moved"
+            );
+        } else {
+            for &(i, a, b) in beats.iter().chain(&downbeats) {
+                assert!(
+                    (b - a).abs() <= 0.0201,
+                    "60 min: time {i} moved by more than one frame: {a} -> {b}"
+                );
+            }
+        }
+    }
+}
+
+/// `load_audio` to targets other than 22 050 Hz, and 44.1 -> 48 kHz, against 1.0.0. Whether the
+/// chunked resampler is bit-identical depends on the source/target ratio, not on the source alone:
+/// it is when rubato's step `source / target` is a short dyadic fraction (44.1 kHz to 22 050 or
+/// 88 200 Hz), and drifts otherwise. Documents the drift; asserts identity exactly where the ratio
+/// predicts it and equal lengths everywhere.
+#[test]
+#[ignore = "long: run with --release -- --ignored --nocapture"]
+fn load_audio_targets_report() {
+    if !Path::new(TEST_AUDIO_PATH).exists() {
+        eprintln!("Skipping test: test audio not found");
+        return;
+    }
+    let path = Path::new(TEST_AUDIO_PATH);
+    eprintln!("| load_audio(44.1 kHz mp3, target) | differing | max_abs | len |");
+    eprintln!("|---|---|---|---|");
+    for target in [22050u32, 88200, 48000, 32000, 16000] {
+        let got = beat_this::load_audio(path, target).unwrap();
+        let old = audio::load_audio(path, target).unwrap();
+        let d = bit_diff(&got.samples, &old.samples);
+        eprintln!(
+            "| {target} | {} | {:.3e} | {} |",
+            d.differing, d.max_abs, d.len_a
+        );
+        assert_eq!(d.len_a, d.len_b, "length at {target}");
+        assert_eq!(
+            d.is_identical(),
+            __probe::chunking_is_exact_between(44100, target),
+            "identity at {target}: {d:?}"
+        );
+    }
+    eprintln!("| synth 44.1 -> 48 kHz, min | differing | max_abs | len |");
+    eprintln!("|---|---|---|---|");
+    for minutes in [20usize, 60] {
+        let x = Synth::take(44100, minutes * 60 * 44100);
+        let got = stream_resample_to(&x, 44100, 48000);
+        let old = audio::resample(x, 44100, 48000).unwrap();
+        let d = bit_diff(&got, &old);
+        eprintln!(
+            "| {minutes} | {} | {:.3e} | {} |",
+            d.differing, d.max_abs, d.len_a
+        );
+        assert_eq!(d.len_a, d.len_b, "length at {minutes} min");
+        assert!(d.differing > 0, "44.1 -> 48 kHz is not an exact ratio");
     }
 }
 
