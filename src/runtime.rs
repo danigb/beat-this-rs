@@ -1,4 +1,4 @@
-#[cfg(feature = "ort")]
+#[cfg(feature = "ort-backend")]
 pub mod ort;
 
 pub mod rten;

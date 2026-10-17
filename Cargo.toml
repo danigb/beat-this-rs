@@ -39,16 +39,24 @@ decode = ["dep:symphonia"]
 serde = ["dep:serde"]
 # Opt-in ONNX Runtime backend (`--runtime ort`). Pure-Rust `rten` is the default
 # and needs no system libraries; `ort` is kept as a maintainer reference oracle
-# (cross-runtime parity, op-level `--profile`) and requires libonnxruntime at
-# runtime. See README / docs/tasks/015-default-runtime.
-ort = ["dep:ort", "dep:ndarray"]
+# (cross-runtime parity, op-level `--profile`). See README /
+# docs/tasks/015-default-runtime.
+#
+# `ort` is the CLI's configuration: the backend, `libonnxruntime` loaded at
+# runtime (`ORT_DYLIB_PATH` / brew) and CoreML requested. `ort-backend` is the
+# backend alone, with linking and execution providers left to the application
+# (Cargo unifies features per build, so a linking choice made here applies to
+# every other user of `ort` in the same binary). `ort-coreml` / `ort-cuda`
+# forward the matching `ort` execution-provider features.
+# (`ort?/…`, not `ort/…`: with a feature named like the dependency, the strong
+# form would also activate the `ort` feature itself, and with it `load-dynamic`.)
+ort = ["ort-backend", "ort?/load-dynamic", "ort-coreml"]
+ort-backend = ["dep:ort", "dep:ndarray"]
+ort-coreml = ["ort-backend", "ort?/coreml"]
+ort-cuda = ["ort-backend", "ort?/cuda"]
 
 [dependencies]
-ort = { version = "=2.0.0-rc.12", optional = true, features = [
-    "ndarray",
-    "load-dynamic",
-    "coreml",
-] }
+ort = { version = "=2.0.0-rc.14", optional = true, features = ["ndarray"] }
 ndarray = { version = "0.17", optional = true }
 rten = { version = "0.24", features = ["fft"] }
 rten-tensor = { version = "0.24" }

@@ -122,7 +122,22 @@ cargo build --release --features ort
 ```
 
 It loads `libonnxruntime` at runtime — install it (`brew install onnxruntime` on macOS)
-or point `ORT_DYLIB_PATH` at the shared library.
+or point `ORT_DYLIB_PATH` at the shared library. The library must be ONNX Runtime 1.31 or
+newer, the API version `ort` 2.0.0-rc.14 targets; an older one fails at startup.
+
+Library users who configure the `ort` crate themselves (its bundled binaries, CUDA, …) can
+enable just the backend with `ort-backend` instead of `ort`; it makes no linking choice of its
+own. `ort-coreml` and `ort-cuda` forward the matching execution-provider features, and the
+providers to register are set through `OrtRuntime::execution_providers`:
+
+```rust
+use beat_this::{BeatThis, OrtRuntime};
+let runtime = OrtRuntime {
+    execution_providers: vec![ort::ep::CUDA::default().build()],
+    ..Default::default()
+};
+let mut bt = BeatThis::new(&runtime, mel_path, beat_path)?;
+```
 
 ## Command-line usage
 

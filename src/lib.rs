@@ -68,7 +68,7 @@ use anyhow::Result;
 #[cfg(feature = "decode")]
 pub use audio::{load_audio, AudioData};
 pub use output::{beat_counts, calculate_bpm};
-#[cfg(feature = "ort")]
+#[cfg(feature = "ort-backend")]
 pub use runtime::ort::OrtRuntime;
 pub use runtime::{rten::RtenRuntime, Model, Runtime, Tensor};
 pub use stream::BeatStream;
