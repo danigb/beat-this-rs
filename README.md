@@ -122,7 +122,8 @@ cargo build --release --features ort
 ```
 
 It loads `libonnxruntime` at runtime — install it (`brew install onnxruntime` on macOS)
-or point `ORT_DYLIB_PATH` at the shared library.
+or point `ORT_DYLIB_PATH` at the shared library. The library must be ONNX Runtime 1.31 or
+newer, the API version `ort` 2.0.0-rc.14 targets; an older one fails at startup.
 
 ## Command-line usage
 

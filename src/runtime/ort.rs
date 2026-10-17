@@ -12,6 +12,7 @@ use ndarray::ArrayD;
 fn ort_err<R>(e: ort::Error<R>) -> anyhow::Error {
     anyhow::anyhow!(e.to_string())
 }
+use ort::environment::Environment;
 use ort::ep::{CoreML, ExecutionProvider};
 use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
@@ -22,10 +23,15 @@ use super::{Model, Runtime, Tensor};
 /// Ort-based ONNX inference runtime.
 ///
 /// Automatically tries CoreML on macOS (falls back to CPU if unavailable).
+///
+/// ONNX Runtime allows one environment per process. If the application has
+/// already created one with `ort::init()`, pass it in `environment`;
+/// otherwise the first `load_model` creates one and later runtimes share it.
 pub struct OrtRuntime {
     pub optimization_level: GraphOptimizationLevel,
     pub intra_threads: usize,
     pub profiling_path: Option<PathBuf>,
+    pub environment: Option<Environment>,
 }
 
 impl Default for OrtRuntime {
@@ -39,31 +45,39 @@ impl Default for OrtRuntime {
             // layers (73% of inference time), which parallelizes well across cores.
             intra_threads: 0,
             profiling_path: None,
+            environment: None,
         }
     }
+}
+
+/// The environment created by this crate when the application did not pass
+/// one, shared by every `OrtRuntime` (ort 2.0.0-rc.14 requires one to build a
+/// session, and ONNX Runtime allows only one per process).
+fn environment() -> Environment {
+    static ENV: std::sync::OnceLock<Environment> = std::sync::OnceLock::new();
+    ENV.get_or_init(|| {
+        ort::init().with_name("beat-this").build().expect(
+            "initialising ONNX Runtime (is libonnxruntime installed, or ORT_DYLIB_PATH set?)",
+        )
+    })
+    .clone()
 }
 
 impl OrtRuntime {
     /// Check if CoreML is available in the loaded ORT runtime.
     pub fn is_coreml_available(&self) -> bool {
-        CoreML::default().is_available().unwrap_or(false)
+        CoreML::is_available().unwrap_or(false)
     }
 }
 
 impl Runtime for OrtRuntime {
     type Model = OrtModel;
 
-    #[allow(clippy::needless_match)]
     fn load_model(&self, path: &Path) -> Result<OrtModel> {
-        // Match is needed because GraphOptimizationLevel doesn't implement Copy or Clone.
-        let optimization_level = match self.optimization_level {
-            GraphOptimizationLevel::Disable => GraphOptimizationLevel::Disable,
-            GraphOptimizationLevel::Level1 => GraphOptimizationLevel::Level1,
-            GraphOptimizationLevel::Level2 => GraphOptimizationLevel::Level2,
-            GraphOptimizationLevel::Level3 => GraphOptimizationLevel::Level3,
-            GraphOptimizationLevel::All => GraphOptimizationLevel::All,
-        };
-        let mut builder = Session::builder()
+        // `GraphOptimizationLevel` is `Copy` as of ort 2.0.0-rc.14.
+        let optimization_level = self.optimization_level;
+        let environment = self.environment.clone().unwrap_or_else(environment);
+        let mut builder = Session::builder(&environment)
             .map_err(ort_err)?
             .with_optimization_level(optimization_level)
             .map_err(ort_err)?

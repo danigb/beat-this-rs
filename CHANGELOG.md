@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Changed
+
+- `ort` backend (opt-in `--features ort`): `ort` 2.0.0-rc.12 → 2.0.0-rc.14, which targets ONNX
+  Runtime 1.31. The loaded `libonnxruntime` must now be 1.31 or newer (Homebrew ships 1.31.0; CI
+  installs 1.31.0). Session creation needs an `ort::Environment` and ONNX Runtime allows one per
+  process, so `OrtRuntime` gains a public `environment: Option<Environment>` field: an application
+  that already called `ort::init()` passes its environment in; otherwise the crate creates one on
+  first use and shares it. The default `rten` backend is unaffected.
+
 ## [1.1.0] - 2026-10-02
 
 Bounded memory for long inputs. Memory figures are macOS `peak memory footprint` (MiB, median of
